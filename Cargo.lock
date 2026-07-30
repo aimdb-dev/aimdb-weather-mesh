@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-data-contracts"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aimdb-core",
  "aimdb-derive",
@@ -1039,7 +1039,6 @@ dependencies = [
 name = "weather-contracts"
 version = "0.1.0"
 dependencies = [
- "aimdb-core",
  "aimdb-data-contracts",
  "rand",
  "serde",

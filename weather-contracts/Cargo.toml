@@ -14,10 +14,6 @@ simulatable = ["aimdb-data-contracts/simulatable", "rand"]
 migratable = ["aimdb-data-contracts/migratable"]
 
 [dependencies]
-aimdb-core = { path = "../../aimdb/aimdb-core", default-features = false, features = [
-    "derive",
-    "alloc",
-] }
 aimdb-data-contracts = { path = "../../aimdb/aimdb-data-contracts", default-features = false, features = [
     "settable",
 ] }
