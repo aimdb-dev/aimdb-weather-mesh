@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+    "weather-contracts",
+    "weather-hub",
+]
+
+[workspace.dependencies]
+# Mirrors the aimdb workspace pin so the shared contracts crate builds no_std.
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
