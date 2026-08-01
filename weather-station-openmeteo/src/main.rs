@@ -1,21 +1,17 @@
 //! # Weather Station — Open-Meteo
 //!
-//! The no-hardware station template for the public weather mesh (design 042
-//! §7/§8): configured entirely by the `station.toml` profile that `aimdb join`
-//! writes — broker URL and credentials, assigned slot, station name, and the
-//! (coarsened) location the real weather data is fetched for. One profile,
-//! one command:
+//! A weather mesh station that needs no hardware. It is configured entirely by
+//! a `station.toml` profile: broker URL and credentials, assigned slot, station
+//! name, and the coordinates the observations are fetched for.
 //!
 //! ```bash
-//! aimdb join https://mesh.aimdb.dev                             # writes station.toml
 //! cargo run -p weather-station-openmeteo -- --config station.toml
 //! ```
 //!
 //! Publishes `Temperature` and `Humidity` into its assigned slot
-//! (`station/{slot}/…`), each fed by a `.source()` so the poll loops are part
-//! of the record graph the runner drives. `DewPoint` is deliberately absent:
-//! the hub derives it per slot from those two records, so a station publishing
-//! it would be producing traffic nothing subscribes to.
+//! (`station/{slot}/…`), each fed by a `.source()` so the poll loops run as
+//! part of the record graph. `DewPoint` is not published here: the hub derives
+//! it per slot from those two records.
 
 mod open_meteo;
 
@@ -39,13 +35,13 @@ const POLL_INTERVAL_SECS: u64 = 300;
 #[derive(Debug, Parser)]
 #[command(name = "weather-station-openmeteo", version, about)]
 struct Cli {
-    /// Path to the station profile written by `aimdb join` (design 043 §4)
+    /// Path to the station profile (station.toml)
     #[arg(long)]
     config: std::path::PathBuf,
 }
 
-/// The station profile (design 043 §4). Unknown fields are ignored so the
-/// service can extend the format without a version bump.
+/// The station profile. Unknown fields are ignored so the provisioning service
+/// can extend the format without a version bump.
 #[derive(Debug, Deserialize)]
 struct StationProfile {
     profile_version: u64,
@@ -61,7 +57,8 @@ struct BrokerProfile {
     password: String,
 }
 
-/// The flagship's `app` map: name + service-coarsened coordinates (042 D8).
+/// The profile's `app` table: station name plus the coordinates the mesh
+/// published for it, coarsened to two decimals (~1 km).
 ///
 /// The coordinates are optional so a hand-written profile can leave the
 /// location to `WEATHER_LAT`/`WEATHER_LON` — see [`resolve_location`].
@@ -98,7 +95,7 @@ impl std::fmt::Display for LocationSource {
 #[tokio::main]
 async fn main() {
     // Display-format errors (revoked slot, bad profile, …) instead of the
-    // default Debug dump — these messages are the failure UX (design 042 §9).
+    // default Debug dump: these messages are what the operator reads.
     if let Err(e) = run().await {
         eprintln!("Error: {e}");
         std::process::exit(1);
@@ -123,14 +120,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if profile.profile_version != 1 {
         return Err(format!(
             "unsupported profile_version {} (this station understands 1) — \
-             re-run `aimdb join` with a current CLI",
+             update the station, or have the profile re-issued for version 1",
             profile.profile_version
         )
         .into());
     }
 
-    // The flagship assigns slot-scoped identities: station_id = "slot-<n>"
-    // maps onto the hub's pool records station.<n>.* (design 042 §4).
+    // Station identities are slot-scoped: station_id = "slot-<n>" maps onto the
+    // hub's pool records station.<n>.*.
     let slot: u16 = profile
         .station_id
         .strip_prefix("slot-")
@@ -158,8 +155,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let client_id = format!("weather-station-{slot}");
 
-    // Fail fast on a dead credential instead of retrying forever: a revoked
-    // slot should say so at the moment the user is looking (design 042 §9).
+    // Fail fast on a dead credential instead of retrying forever, so a revoked
+    // slot reports itself at startup.
     preflight_broker_check(&profile.broker, &client_id).await?;
 
     let mqtt_url = url_with_credentials(&profile.broker)?;
@@ -172,7 +169,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // One client behind both records: the two sources poll on the same cadence
     // and share the observation, so a cycle costs one HTTP request and both
-    // records carry one timestamp.
+    // records carry the same timestamp.
     let client = Arc::new(OpenMeteoClient::new(lat, lon));
 
     let temp_key = StringKey::intern(format!("station.{slot}.temperature"));
@@ -212,7 +209,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     info!("Press Ctrl+C to stop");
 
     // `.run()` drives the sources, the outbound links and the connector on one
-    // task set — everything this station does is in the graph above.
+    // task set; everything this station does is in the graph above.
     builder.run().await?;
 
     Ok(())
@@ -220,8 +217,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Feeds `station.{slot}.temperature`.
 ///
-/// This is the seam the template is built around: swap the `client.current`
-/// call for a sensor read and the record wiring above is unchanged.
+/// Replacing the `client.current` call with a sensor read leaves the record
+/// wiring above unchanged.
 async fn temperature_source(
     ctx: RuntimeContext,
     producer: Producer<Temperature>,
@@ -267,10 +264,10 @@ async fn humidity_source(
 
 /// One CONNECT → CONNACK round-trip before building the database.
 ///
-/// The connector's event loop retries connection errors forever (by design —
-/// brokers come and go). For an admission-scoped credential that is the wrong
-/// UX: a revoked slot would retry silently for eternity. Probe once and turn
-/// an auth rejection into a human answer (design 042 §9).
+/// The connector's event loop retries connection errors forever, which suits a
+/// broker that comes and goes but not a credential the mesh can revoke: a
+/// revoked slot would retry silently. Probing once turns an auth rejection into
+/// an error message at startup.
 async fn preflight_broker_check(
     broker: &BrokerProfile,
     client_id: &str,
@@ -305,7 +302,7 @@ async fn preflight_broker_check(
         Ok(Err(rumqttc::ConnectionError::ConnectionRefused(code))) => Err(format!(
             "the broker rejected this station's credential ({code:?}).\n  \
              The slot was likely revoked (silent for 30 days, or by the operator).\n  \
-             Re-join the mesh for a fresh slot: aimdb join <provisioning-url>"
+             Re-join the mesh to get a fresh slot."
         )
         .into()),
         Ok(Err(e)) => Err(format!(
@@ -323,14 +320,13 @@ async fn preflight_broker_check(
 
 /// Pick the coordinates the weather data is fetched for.
 ///
-/// The profile wins when it carries them: 043 §3.1 makes the service's
-/// coarsened `app.lat`/`app.lon` the values a joined station must report from,
-/// so an environment variable does not get to move a station on the public map.
-/// `WEATHER_LAT`/`WEATHER_LON` fill in for a hand-written profile that omits
-/// them, and Vienna is the last resort.
+/// The profile wins when it carries them: a joined station reports from the
+/// coarsened location the mesh published for it, so an environment variable
+/// cannot move it on the public map. `WEATHER_LAT`/`WEATHER_LON` fill in for a
+/// hand-written profile that omits them, and Vienna is the last resort.
 ///
-/// Coordinates are taken as a pair — half a location is a mistake worth saying
-/// out loud rather than silently mixing two sources.
+/// Coordinates are taken as a pair from one source; half a location is an error
+/// rather than a silent mix of two sources.
 fn resolve_location(
     profile: (Option<f64>, Option<f64>),
     env: (Option<f64>, Option<f64>),
@@ -422,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_parses_the_043_sample() {
+    fn profile_parses_all_fields() {
         let profile: StationProfile = toml::from_str(
             r#"
             profile_version = 1
@@ -469,7 +465,7 @@ mod tests {
         assert_eq!(profile.app.lon, None);
     }
 
-    /// 043 §5: services may add fields without a version bump.
+    /// The provisioning service may add fields without a version bump.
     #[test]
     fn profile_ignores_unknown_fields() {
         let profile: StationProfile = toml::from_str(

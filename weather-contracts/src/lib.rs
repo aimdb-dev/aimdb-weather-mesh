@@ -1,15 +1,15 @@
 //! # Weather Contracts
 //!
 //! The `Temperature`, `Humidity` and `DewPoint` schemas shared by the AimDB
-//! weather mesh. Records are addressed by `StringKey` at the hub and stations,
-//! so this crate carries no key enums — only the schemas themselves.
+//! weather mesh. Records are addressed by `StringKey` at the hub and at the
+//! stations, so this crate carries no key enums, only the schemas themselves.
 //!
 //! This crate is `no_std` compatible for use on MCU nodes.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-// Concrete data contracts — example implementations of the `aimdb-data-contracts`
-// traits (`SchemaType`, `Streamable`, `Observable`, `Settable`, `Linkable`,
+// Concrete data contracts: implementations of the `aimdb-data-contracts` traits
+// (`SchemaType`, `Streamable`, `Observable`, `Settable`, `Linkable`,
 // `Simulatable`, `Migratable`) for weather monitoring.
 pub mod dew_point;
 pub mod humidity;

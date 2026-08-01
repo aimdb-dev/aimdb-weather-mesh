@@ -1,20 +1,19 @@
 //! Open-Meteo as the station's data source.
 //!
-//! Deliberately free of AimDB and contract types: everything here is about
-//! getting numbers for a coordinate, so replacing this module with a real
-//! sensor driver leaves the record graph in `main.rs` untouched.
+//! Free of AimDB and contract types: everything here is about fetching numbers
+//! for a coordinate, so replacing this module with a sensor driver leaves the
+//! record graph in `main.rs` untouched.
 
 use aimdb_core::RuntimeContext;
 use serde::Deserialize;
 
-/// How long a fetched observation stays good for. Both sources wake on the
-/// same cadence, so whatever landed inside this window is the reading the
-/// other source just paid for.
+/// How long a fetched observation stays valid. Both sources poll on the same
+/// cadence, so a reading fetched inside this window is reused by the second one.
 const REFRESH_WINDOW_NANOS: u64 = 60 * 1_000_000_000;
 
 /// One reading of the station's location. Temperature and humidity come from
-/// the same observation and therefore share a timestamp — which is what the
-/// hub's dew-point join over the two records assumes.
+/// the same observation and therefore share a timestamp, which the hub's
+/// dew-point join over the two records relies on.
 #[derive(Clone, Copy)]
 pub struct Observation {
     /// Air temperature in degrees Celsius.
@@ -57,11 +56,10 @@ impl OpenMeteoClient {
     /// The current observation, fetched at most once per
     /// [`REFRESH_WINDOW_NANOS`].
     ///
-    /// The lock is deliberately held across the HTTP call: both sources wake
-    /// on the same cadence, so the second one waits and then finds the reading
-    /// the first paid for instead of issuing a duplicate request. A real
-    /// sensor wants the same shape — a BME280 returns temperature and humidity
-    /// in one transaction.
+    /// The lock is held across the HTTP call so the second source waits and
+    /// then reads the observation the first one fetched, rather than issuing a
+    /// duplicate request. A combined sensor such as a BME280 behaves the same
+    /// way: temperature and humidity arrive in one transaction.
     pub async fn current(&self, ctx: &RuntimeContext) -> Result<Observation, reqwest::Error> {
         let mut cached = self.cached.lock().await;
 

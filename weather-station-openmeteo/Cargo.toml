@@ -36,7 +36,7 @@ reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 toml = "0.8"
-# Pre-flight CONNECT probe only (revoked-credential UX, design 042 §9); the
+# Pre-flight CONNECT probe only, so a revoked credential fails at startup; the
 # data path goes through aimdb-mqtt-connector. Same feature set as the
 # connector's own rumqttc.
 rumqttc = { version = "0.25", default-features = false, features = [
