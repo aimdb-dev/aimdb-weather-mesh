@@ -27,6 +27,7 @@ dependencies = [
  "serde_json",
  "spin",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -47,6 +48,22 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "aimdb-knx-connector"
+version = "0.4.0"
+dependencies = [
+ "aimdb-core",
+ "async-stream",
+ "futures-core",
+ "futures-util",
+ "heapless 0.8.0",
+ "knx-pico",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -194,6 +211,12 @@ name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+
+[[package]]
+name = "byteorder"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
@@ -525,6 +548,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -538,6 +570,26 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+
+[[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
+
+[[package]]
+name = "heapless"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
 
 [[package]]
 name = "heck"
@@ -801,6 +853,13 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "knx-pico"
+version = "0.3.0"
+dependencies = [
+ "heapless 0.9.3",
 ]
 
 [[package]]
@@ -1875,6 +1934,25 @@ dependencies = [
  "aimdb-tcp-connector",
  "aimdb-tokio-adapter",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "weather-contracts",
+]
+
+[[package]]
+name = "weather-station-knx"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-data-contracts",
+ "aimdb-knx-connector",
+ "aimdb-mqtt-connector",
+ "aimdb-tokio-adapter",
+ "clap",
+ "rumqttc",
+ "serde",
+ "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "weather-contracts",

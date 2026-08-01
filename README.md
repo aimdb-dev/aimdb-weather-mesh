@@ -31,7 +31,11 @@ over MQTT and one hub aggregates them into a queryable AimDB instance.
 |---|---|
 | [`weather-contracts`](weather-contracts) | The `Temperature`, `Humidity` and `DewPoint` schemas. Defines the wire format every station and the hub agree on. `no_std` compatible. |
 | [`weather-station-openmeteo`](weather-station-openmeteo) | Station template that needs no hardware: it fetches real observations from Open-Meteo for a location and publishes them into an assigned slot. |
+| [`weather-station-knx`](weather-station-knx) | Station template fed by a real KNX installation: temperature and humidity read off the bus through a KNXnet/IP gateway, throttled, and published into an assigned slot. |
 | [`weather-hub`](weather-hub) | Aggregating hub: a fixed pool of station slots, dew point derived per slot, exposed over AimX for the CLI and the dashboard. |
+
+Each station is self-contained: copy one out as the starting point for a station
+of your own, and it carries its own profile parsing and broker handling with it.
 
 ## Data model
 
@@ -62,6 +66,14 @@ hub's deserializer and logged against the record key it arrived on. See the
   └── aimdb-weather-mesh/    # this repository
   ```
 
+- The `knx-pico` submodule of that checkout, which the workspace
+  `[patch.crates-io]` points at (`weather-station-knx` needs the aimdb fork; a
+  `[patch]` does not cross workspace boundaries, so it is repeated here):
+
+  ```bash
+  git -C ../aimdb submodule update --init _external/knx-pico
+  ```
+
 - An MQTT broker for the hub and stations to meet on — a local `mosquitto` for
   development, or the mesh broker named in a station profile.
 
@@ -78,6 +90,14 @@ MESH_SLOTS=8 MQTT_BROKER=localhost cargo run -p weather-hub
 
 # 3 — station on slot 2 (see the station README for station.local.toml)
 cargo run -p weather-station-openmeteo -- --config station.local.toml
+```
+
+For a KNX station without KNX hardware, [`tools/knx-sensor-sim.py`](tools/knx-sensor-sim.py)
+stands in for the gateway and the sensors behind it:
+
+```bash
+python3 tools/knx-sensor-sim.py --ga 9/1/0=21.5 --ga 9/1/1=48 --interval 10
+cargo run -p weather-station-knx -- --config station.local.toml
 ```
 
 Inspect the result with the AimDB CLI, built with its `transport-tcp` feature:
