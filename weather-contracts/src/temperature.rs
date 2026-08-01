@@ -2,14 +2,15 @@
 //!
 //! # Schema Evolution
 //!
-//! This module demonstrates backward-compatible schema migration with
-//! **version-aware payloads** for decoupled deployment:
+//! `Temperature` is a **version-aware payload**, so stations and hubs can be
+//! updated independently:
 //!
 //! - **v1** (legacy): `{ "schema_version": 1, "temp": f32, "timestamp": u64, "unit": "C"|"F"|"K" }`
 //! - **v2** (current): `{ "schema_version": 2, "celsius": f32, "timestamp": u64 }`
 //!
-//! The `MigrationChain` impl (via `migration_chain!`) reads the `schema_version`
-//! from the payload and migrates automatically, allowing nodes and hubs to be updated independently.
+//! The `MigrationChain` impl (via `migration_chain!`) reads `schema_version`
+//! from the payload and migrates an older one to the current schema before the
+//! record sees it.
 
 extern crate alloc;
 
@@ -68,12 +69,11 @@ impl Streamable for TemperatureV2 {}
 // LEGACY v1 SCHEMA (for migration purposes)
 // ═══════════════════════════════════════════════════════════════════
 
-/// Legacy Temperature schema (v1) - for migration from old nodes.
+/// Legacy Temperature schema (v1), the input of the migration from older nodes.
 ///
 /// v1 format: `{ "schema_version": 1, "temp": f32, "timestamp": u64, "unit": "C"|"F"|"K" }`
 ///
-/// This is kept so migration logic can be tested in CI/CD, ensuring
-/// backward compatibility is maintained.
+/// Kept in the crate so the migration path stays covered by the test suite.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TemperatureV1 {
     /// Schema version marker (always 1 for v1)

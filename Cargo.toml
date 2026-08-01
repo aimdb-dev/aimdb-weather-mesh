@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "weather-contracts",
     "weather-hub",
+    "weather-station-openmeteo",
 ]
 
 [workspace.dependencies]

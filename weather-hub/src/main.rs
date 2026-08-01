@@ -6,7 +6,7 @@ use weather_contracts::{DewPoint, Humidity, Temperature};
 #[tokio::main]
 async fn main() -> aimdb_core::DbResult<()> {
     // Initialize logging. `aimdb` is the runtime-context log target (ctx.log()
-    // via the adapter) — without it in the fallback filter, contract-violation
+    // via the adapter); without it in the fallback filter, contract-violation
     // reports from the mesh deserializers are invisible.
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -44,9 +44,9 @@ async fn main() -> aimdb_core::DbResult<()> {
         .unwrap_or(64);
     tracing::info!("🕸️  Mesh mode: {} slots", slots);
 
-    // AimX introspection endpoint: what `aimdb record list --url tcp://…:7433`
-    // talks to. Read-only (the default policy) and loopback-only unless
-    // AIMX_BIND says otherwise — the hosted deployment fronts it as
+    // AimX introspection endpoint: what `aimdb --connect tcp://…:7433 record
+    // list` talks to. Read-only (the default policy) and loopback-only unless
+    // AIMX_BIND says otherwise; the hosted deployment fronts it as
     // aimdb.dev:7433.
     let aimx_bind = std::env::var("AIMX_BIND").unwrap_or_else(|_| "127.0.0.1:7433".to_string());
     tracing::info!("🔌 AimX endpoint: tcp://{}", aimx_bind);
@@ -62,22 +62,24 @@ async fn main() -> aimdb_core::DbResult<()> {
 /// Registers the mesh slot pool: temperature, humidity and derived dew point
 /// for every slot, bound to `station/{slot}/…` on the broker.
 ///
-/// Every slot's records exist from startup, so admission is just handing out an
-/// unused slot number — a station joining never needs a hub recompile. The
+/// Every slot's records exist from startup, so admitting a station is only a
+/// matter of handing out an unused slot number; no hub restart is involved. The
 /// schema check happens per payload instead: `from_bytes` rejects anything that
-/// doesn't match the contract and that rejection is logged at the hub.
+/// doesn't match the contract, and the rejection is logged at the hub.
 ///
-/// No per-value `.log()` here — dozens of slots of per-message console lines is
-/// noise. `.observe()` keeps the signal gauges on `record list`/`record get`.
+/// Values are not logged per message: across dozens of slots that output
+/// drowns out everything else. `.observe()` keeps the signal gauges available
+/// on `record list` / `record get`.
 fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
     for slot in 0..slots {
         let temp_key = StringKey::intern(format!("station.{slot}.temperature"));
         let temp_topic = format!("mqtt://station/{slot}/temperature");
         builder.configure::<Temperature>(temp_key, |reg| {
-            // Single Producer, Multiple Consumers (SPMC) ring buffer: a station publishes
-            // to the hub and the dashboard and `aimdb record get` read from it
+            // Single Producer, Multiple Consumers (SPMC) ring buffer: one
+            // station publishes into it, the dashboard and `aimdb record get`
+            // read from it.
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
-            // Folds °C into the record's signal gauge (last/min/max/mean) — the
+            // Folds °C into the record's signal gauge (last/min/max/mean), the
             // per-slot stats behind `record list` / `record get`.
             reg.observe();
             // JSON codec for AimX record.get/subscribe — the dashboard and
@@ -87,8 +89,8 @@ fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
             reg.link_from(&temp_topic)
                 .with_deserializer(move |ctx, data: &[u8]| {
                     Temperature::from_bytes(data).map_err(|e| {
-                        // Schema errors are a feature: a station publishing a
-                        // malformed payload gets told so, visibly, at the hub.
+                        // Report the rejection against the record key, so a
+                        // station publishing a malformed payload is visible.
                         ctx.log()
                             .error(&format!("{key_name}: rejected payload: {e}"));
                         e
