@@ -1,0 +1,49 @@
+[package]
+name = "weather-station-knx"
+version = "0.1.0"
+edition = "2021"
+description = "KNX weather mesh station - republishes KNX bus sensors into an assigned mesh slot"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "weather-station-knx"
+path = "src/main.rs"
+
+[dependencies]
+# `migratable` is not optional here: Temperature's `Linkable` impl (the
+# `to_bytes` this station publishes through) is gated on both features.
+weather-contracts = { path = "../weather-contracts", features = [
+    "linkable",
+    "migratable",
+] }
+aimdb-core = { path = "../../aimdb/aimdb-core" }
+aimdb-tokio-adapter = { path = "../../aimdb/aimdb-tokio-adapter" }
+aimdb-data-contracts = { path = "../../aimdb/aimdb-data-contracts", features = [
+    "linkable",
+    "migratable",
+] }
+# The connector's rumqttc carries `use-native-tls` unconditionally, so
+# `mqtts://` profile URLs work without an extra feature here.
+aimdb-mqtt-connector = { path = "../../aimdb/aimdb-mqtt-connector", features = [
+    "tokio-runtime",
+] }
+# `tracing` puts the connector's own gateway/reconnect reporting on the same
+# subscriber as the station's; without it a gateway outage is silent.
+aimdb-knx-connector = { path = "../../aimdb/aimdb-knx-connector", features = [
+    "tokio-runtime",
+    "tracing",
+] }
+
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+# Pre-flight CONNECT probe only, so a revoked credential fails at startup; the
+# data path goes through aimdb-mqtt-connector. Same feature set as the
+# connector's own rumqttc.
+rumqttc = { version = "0.25", default-features = false, features = [
+    "use-native-tls",
+] }
