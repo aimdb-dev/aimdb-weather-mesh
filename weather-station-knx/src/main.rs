@@ -213,8 +213,10 @@ fn register_temperature(
     let link = format!("knx://{ga}");
 
     builder.configure::<Temperature>(RAW_TEMPERATURE_KEY, |reg| {
-        // SingleLatest: a sensor has one current value, and a throttle that
-        // skips a superseded reading is doing its job.
+        // SingleLatest: a sensor has one current value. The throttle is
+        // leading-edge — it drops readings inside the window rather than
+        // deferring them, so a burst followed by silence leaves the mesh on
+        // the burst's first value until the next telegram arrives.
         reg.buffer(BufferCfg::SingleLatest)
             .link_from(&link)
             .with_deserializer(move |ctx, data: &[u8]| {
