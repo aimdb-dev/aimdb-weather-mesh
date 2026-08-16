@@ -4,6 +4,8 @@
 //! fix rather than the fault: a rejected credential explains how to get a new
 //! slot instead of reporting a CONNACK refusal code.
 
+use alloc::string::String;
+
 use thiserror::Error;
 
 /// A station failed to join the mesh.
@@ -66,7 +68,7 @@ pub enum StationError {
     /// hand back a station it cannot prove is pumping.
     #[cfg(feature = "sync")]
     #[error("the record graph did not start within {0:?}")]
-    GraphStartTimeout(std::time::Duration),
+    GraphStartTimeout(core::time::Duration),
 
     /// The system clock is unusable, so readings would carry no timestamp.
     #[cfg(feature = "sync")]

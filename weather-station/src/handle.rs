@@ -1,5 +1,6 @@
 //! The blocking door: a station whose caller owns the loop.
 
+use alloc::string::{String, ToString};
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::Arc;

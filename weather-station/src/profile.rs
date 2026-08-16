@@ -20,6 +20,8 @@
 //! Unknown fields are ignored throughout, so the provisioning service can
 //! extend the format without a version bump.
 
+use alloc::string::{String, ToString};
+
 use serde::Deserialize;
 
 use crate::StationError;

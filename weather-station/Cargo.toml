@@ -7,48 +7,90 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [features]
-default = []
+# Host stations. Kept as the default so the templates and every `cargo` command
+# in this workspace behave as before; an MCU build opts out with
+# `--no-default-features --features embassy-runtime`.
+default = ["tokio-runtime"]
+
+# Tokio host station: the `Station` facade, `init_tracing`, and the pre-flight
+# probe. Mutually exclusive with `embassy-runtime`.
+tokio-runtime = [
+    "std",
+    "preflight",
+    "tracing",
+    "dep:aimdb-tokio-adapter",
+    "aimdb-mqtt-connector/tokio-runtime",
+    "dep:tracing-subscriber",
+]
+
+# An MCU station enables *no* feature from this crate: it gets the mesh
+# contract (profile, slot identity, record keys, topics) plus
+# `configure_slot_records!`, and brings its own Embassy adapter and MQTT
+# connector. The embassy dependencies are deliberately not declared here —
+# see the crate docs for why the workspace, not this manifest, is where they
+# would have to land.
+
+std = ["aimdb-core/std", "weather-contracts/std", "aimdb-data-contracts/std"]
+
+# The pre-flight CONNECT probe: one round-trip before the graph is built, so a
+# revoked slot says so at startup instead of retrying in silence.
+#
+# Separately gated because it is the one piece of the handshake an MCU is
+# better off without — it is a second MQTT client (rumqttc, its own TLS stack,
+# a Tokio runtime) bought for a single CONNECT. Without it a revoked station
+# sits in the connector's reconnect loop, which on a device with no operator
+# watching is the same outcome by a cheaper route.
+preflight = ["std", "dep:rumqttc", "dep:tokio"]
+
+# Route the crate's own reporting to `tracing`. Off on Embassy, where the
+# `log_*` macros compile to nothing and the connector reports via defmt.
+tracing = ["dep:tracing", "aimdb-core/tracing"]
+
 # `StationHandle`: the blocking door, for callers that own their own loop —
 # a Rust thread, or a Python/C/C++ station through an FFI layer above this
-# crate. Off by default so the two async templates do not build the sync
-# runtime bridge they never call.
-sync = ["dep:aimdb-sync", "dep:toml"]
+# crate. Host-only: `aimdb-sync` is Tokio-only by design.
+sync = ["tokio-runtime", "dep:aimdb-sync", "dep:toml"]
 
 [dependencies]
 # `migratable` is not optional here: Temperature's `Linkable` impl (the
 # `to_bytes` the slot's outbound links publish through) is gated on both
 # features.
-weather-contracts = { path = "../weather-contracts", features = [
+weather-contracts = { path = "../weather-contracts", default-features = false, features = [
     "linkable",
     "migratable",
 ] }
-aimdb-core = { path = "../../aimdb/aimdb-core" }
-aimdb-tokio-adapter = { path = "../../aimdb/aimdb-tokio-adapter" }
-aimdb-data-contracts = { path = "../../aimdb/aimdb-data-contracts", features = [
+aimdb-core = { path = "../../aimdb/aimdb-core", default-features = false, features = [
+    "alloc",
+] }
+aimdb-data-contracts = { path = "../../aimdb/aimdb-data-contracts", default-features = false, features = [
     "linkable",
     "migratable",
 ] }
-# The connector's rumqttc carries `use-native-tls` unconditionally, so
-# `mqtts://` profile URLs work without an extra feature here.
-aimdb-mqtt-connector = { path = "../../aimdb/aimdb-mqtt-connector", features = [
-    "tokio-runtime",
-] }
+aimdb-mqtt-connector = { path = "../../aimdb/aimdb-mqtt-connector", default-features = false, optional = true }
 
-tokio = { version = "1", features = ["time"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde = { version = "1.0", features = ["derive"] }
-thiserror = "2"
+serde = { version = "1.0", default-features = false, features = [
+    "derive",
+    "alloc",
+] }
+thiserror = { version = "2", default-features = false }
+
+# --- tokio-runtime only ---
+aimdb-tokio-adapter = { path = "../../aimdb/aimdb-tokio-adapter", optional = true }
+tracing = { version = "0.1", default-features = false, optional = true }
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+], optional = true }
+
+# --- preflight only ---
 # Pre-flight CONNECT probe only, so a revoked credential fails at startup; the
 # data path goes through aimdb-mqtt-connector. Same feature set as the
 # connector's own rumqttc.
 rumqttc = { version = "0.25", default-features = false, features = [
     "use-native-tls",
-] }
+], optional = true }
+tokio = { version = "1", features = ["time"], optional = true }
 
-# `sync` only: the runtime-thread bridge behind `StationHandle`, and the
-# profile parsing it does on behalf of callers that have a path rather than a
-# Rust struct.
+# --- sync only ---
 aimdb-sync = { path = "../../aimdb/aimdb-sync", optional = true }
 toml = { version = "0.8", optional = true }
 

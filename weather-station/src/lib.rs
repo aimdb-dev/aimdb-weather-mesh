@@ -14,22 +14,18 @@
 //!
 //! [`Station`] is the default. Join, supply one async task per quantity, run:
 //!
-//! ```no_run
-//! # use aimdb_core::{Producer, RuntimeContext};
-//! # use weather_contracts::{Humidity, Temperature};
-//! # use weather_station::{AppProfile, BrokerProfile, Station, StationError};
-//! # async fn temperature_source(ctx: RuntimeContext, producer: Producer<Temperature>) {}
-//! # async fn humidity_source(ctx: RuntimeContext, producer: Producer<Humidity>) {}
-//! # async fn example(app: &AppProfile, broker: &BrokerProfile) -> Result<(), StationError> {
+//! ```text
 //! Station::join("slot-17", app, broker)
 //!     .await?
 //!     .temperature(temperature_source)
 //!     .humidity(humidity_source)
 //!     .run()
 //!     .await?;
-//! # Ok(())
-//! # }
 //! ```
+//!
+//! (These overview snippets are shown, not compiled — the types behind them are
+//! feature-gated, and a doctest cannot see the library's features. The compiled
+//! examples live on [`Station`], [`MeshSlot::attach`] and [`StationHandle`].)
 //!
 //! [`MeshSlot`] is for stations that ingest *through* the record graph rather
 //! than from a `.source()` — readings arriving over a connector AimDB already
@@ -63,12 +59,48 @@
 //! sensor reports or to throttle to whatever suits it — rate is station
 //! freedom, so a throttle belongs in the station, not behind this boundary.
 
+//! ## Runtimes
+//!
+//! The crate is `no_std` with `alloc`. `tokio-runtime` — the default, and what
+//! the two host templates use — adds the `Station` facade, [`init_tracing`],
+//! [`MeshSlot::attach`] and the pre-flight probe.
+//!
+//! An MCU station turns all of that off (`--no-default-features`) and keeps
+//! what the mesh actually defines: the profile tables, the `slot-<n>` identity,
+//! the record keys, the outbound topics, and
+//! [`configure_slot_records!`] to put the records on its own builder. It brings
+//! its own Embassy adapter and MQTT connector, because those cannot be declared
+//! here — a path dependency on embassy from this crate drags the whole embassy
+//! graph into the workspace's resolution and collides on
+//! `links = "embassy-time"`, which only the `[patch.crates-io]` entries in the
+//! *aimdb* workspace resolve. That patch set belongs wherever the MCU station
+//! lives, not in a manifest every host station also reads.
+//!
+//! What matters is that both halves derive `station.<n>.temperature` and
+//! `mqtt://station/<n>/temperature` from the same code. An MCU template that
+//! spelled those itself is exactly the drift this crate exists to prevent.
+//!
+//! ## Pre-flight is optional
+//!
+//! The `preflight` feature (on with `tokio-runtime`) probes the broker with one
+//! CONNECT before building the graph, so a revoked slot fails at startup. It is
+//! a second MQTT client bought for a single round-trip — worth it on a host,
+//! not on an MCU, which is left to the connector's reconnect loop instead.
+
+#![no_std]
+
+extern crate alloc;
+
+#[cfg(feature = "std")]
+extern crate std;
+
 mod broker;
 mod error;
 #[cfg(feature = "sync")]
 mod handle;
 mod profile;
 mod slot;
+#[cfg(feature = "tokio-runtime")]
 mod station;
 
 pub use broker::redact_url;
@@ -78,8 +110,16 @@ pub use handle::StationHandle;
 pub use profile::{
     check_profile_version, slot_from_station_id, AppProfile, BrokerProfile, PROFILE_VERSION,
 };
-pub use slot::MeshSlot;
+pub use slot::{MeshSlot, MESH_BUFFER_CAPACITY};
+#[cfg(feature = "tokio-runtime")]
 pub use station::Station;
+
+/// Paths for [`configure_slot_records!`] to expand against, so the macro does
+/// not depend on what the calling crate happens to name its dependencies.
+#[doc(hidden)]
+pub mod __macro_deps {
+    pub use {aimdb_core, aimdb_data_contracts, weather_contracts};
+}
 
 /// Set up tracing for a station binary.
 ///
@@ -91,7 +131,10 @@ pub use station::Station;
 /// healthy one — it says nothing either way.
 ///
 /// `RUST_LOG` overrides the whole filter when set.
+#[cfg(feature = "tokio-runtime")]
 pub fn init_tracing(station_target: &str) {
+    use alloc::format;
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {

@@ -1,16 +1,19 @@
 //! Reaching the mesh broker with the credential the profile carries.
 //!
-//! The pre-flight probe is the part that matters to the mesh: a slot can be
-//! revoked, and without it a revoked station retries forever in silence.
+//! Splitting the URL and hiding the credential is pure string work and shared
+//! by every station. The pre-flight probe is not: it is a second MQTT client
+//! bought for one CONNECT, which is worth it on a host and not on an MCU, so it
+//! sits behind the `preflight` feature.
 
-use std::time::Duration;
+use alloc::format;
+use alloc::string::{String, ToString};
 
-use tracing::info;
-
+#[cfg(feature = "preflight")]
 use crate::{BrokerProfile, StationError};
 
 /// How long the pre-flight probe waits for a CONNACK before giving up.
-const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg(feature = "preflight")]
+const PREFLIGHT_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(15);
 
 /// One CONNECT → CONNACK round-trip before building the database.
 ///
@@ -18,6 +21,11 @@ const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(15);
 /// broker that comes and goes but not a credential the mesh can revoke: a
 /// revoked slot would retry silently. Probing once turns an auth rejection into
 /// an error message at startup.
+///
+/// A station built without the `preflight` feature skips this and learns the
+/// same thing from the connector's reconnect loop instead — later, and only in
+/// the log, which is the trade an MCU makes.
+#[cfg(feature = "preflight")]
 pub(crate) async fn preflight_broker_check(
     broker: &BrokerProfile,
     client_id: &str,
@@ -25,7 +33,7 @@ pub(crate) async fn preflight_broker_check(
     let (tls, host, port) = split_broker_url(&broker.url)?;
 
     let mut opts = rumqttc::MqttOptions::new(format!("{client_id}-preflight"), host, port);
-    opts.set_keep_alive(Duration::from_secs(10));
+    opts.set_keep_alive(core::time::Duration::from_secs(10));
     opts.set_credentials(&broker.username, &broker.password);
     if tls {
         opts.set_transport(rumqttc::Transport::Tls(rumqttc::TlsConfiguration::Native));
@@ -46,7 +54,7 @@ pub(crate) async fn preflight_broker_check(
 
     match result {
         Ok(Ok(())) => {
-            info!("✅ Broker accepted the station credential");
+            aimdb_core::log_info!("✅ Broker accepted the station credential");
             Ok(())
         }
         Ok(Err(rumqttc::ConnectionError::ConnectionRefused(code))) => {
@@ -61,6 +69,10 @@ pub(crate) async fn preflight_broker_check(
 }
 
 /// Split a `mqtt[s]://host[:port]` broker URL into (tls, host, port).
+///
+/// Only the pre-flight probe needs the URL taken apart: both connectors parse
+/// the URL themselves.
+#[cfg(feature = "preflight")]
 pub(crate) fn split_broker_url(url: &str) -> Result<(bool, String, u16), StationError> {
     let (scheme, rest) = url
         .split_once("://")
@@ -86,16 +98,21 @@ pub(crate) fn split_broker_url(url: &str) -> Result<(bool, String, u16), Station
     Ok((tls, host, port))
 }
 
-/// Embed the profile's credential into the connector URL
-/// (`mqtts://user:pass@host:port`), the form the MQTT connector parses.
-pub(crate) fn url_with_credentials(broker: &BrokerProfile) -> Result<String, StationError> {
-    let (scheme, rest) = broker.url.split_once("://").ok_or_else(|| {
-        StationError::BrokerUrl(format!("broker URL '{}' has no scheme", broker.url))
-    })?;
-    Ok(format!(
-        "{scheme}://{}:{}@{rest}",
-        broker.username, broker.password
-    ))
+/// Embed the credential into the connector URL
+/// (`mqtts://user:pass@host:port`), the form the Tokio MQTT connector parses.
+///
+/// Tokio-only: the Embassy connector takes the credential as its own
+/// `with_credentials` argument, so it never has to travel inside a URL.
+///
+/// A URL with no scheme is returned unchanged rather than rejected — the slot
+/// was already claimed by the time this runs, and the connector reports a bad
+/// URL better than a second parse of it would.
+#[cfg(feature = "tokio-runtime")]
+pub(crate) fn url_with_credentials_from(url: &str, username: &str, password: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) => format!("{scheme}://{username}:{password}@{rest}"),
+        None => url.to_string(),
+    }
 }
 
 /// Strip URL-embedded credentials before logging.
@@ -112,14 +129,7 @@ pub fn redact_url(url: &str) -> String {
 mod tests {
     use super::*;
 
-    fn broker(url: &str) -> BrokerProfile {
-        BrokerProfile {
-            url: url.to_string(),
-            username: "station-17".to_string(),
-            password: "s3cret".to_string(),
-        }
-    }
-
+    #[cfg(feature = "preflight")]
     #[test]
     fn broker_url_splits_with_scheme_defaults() {
         assert_eq!(
@@ -138,10 +148,11 @@ mod tests {
         assert!(split_broker_url("no-scheme").is_err());
     }
 
+    #[cfg(feature = "tokio-runtime")]
     #[test]
     fn connector_url_carries_credentials() {
         assert_eq!(
-            url_with_credentials(&broker("mqtts://broker.example.com:8883")).unwrap(),
+            url_with_credentials_from("mqtts://broker.example.com:8883", "station-17", "s3cret"),
             "mqtts://station-17:s3cret@broker.example.com:8883"
         );
     }
@@ -159,7 +170,8 @@ mod tests {
     /// reports it the same way.
     #[test]
     fn a_rejected_credential_names_the_recovery_path() {
-        let message = StationError::CredentialRejected("NotAuthorized".to_string()).to_string();
+        let message =
+            crate::StationError::CredentialRejected("NotAuthorized".to_string()).to_string();
         assert!(message.contains("silent for 30 days, or by the operator"));
         assert!(message.contains("Re-join the mesh"));
     }

@@ -56,6 +56,21 @@ cargo test -p weather-station --features sync
 mosquitto -p 1883 & cargo test -p weather-station --features sync -- --ignored
 ```
 
+The crate is `no_std` with `alloc`, and everything above is behind the default
+`tokio-runtime` feature. An MCU station turns it off and keeps what the mesh
+actually defines — the profile tables, the `slot-<n>` identity, the record keys
+and topics, and `configure_slot_records!` to put the records on its own builder
+— bringing its own Embassy adapter and MQTT connector:
+
+```bash
+cargo check -p weather-station --no-default-features --target thumbv7em-none-eabihf
+```
+
+The pre-flight broker probe is its own `preflight` feature (on by default with
+`tokio-runtime`). A host station wants it, so a revoked slot fails loudly at
+startup; an MCU is better off in the connector's reconnect loop than carrying a
+second MQTT client for one CONNECT.
+
 ## Data model
 
 Each station owns a numbered *slot*. Slot number `<n>` fixes both the MQTT
