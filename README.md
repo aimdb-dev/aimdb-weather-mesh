@@ -30,12 +30,22 @@ over MQTT and one hub aggregates them into a queryable AimDB instance.
 | Crate | Role |
 |---|---|
 | [`weather-contracts`](weather-contracts) | The `Temperature`, `Humidity` and `DewPoint` schemas. Defines the wire format every station and the hub agree on. `no_std` compatible. |
+| [`weather-station`](weather-station) | Mesh-join behaviour every station shares: the profile format, the `slot-<n>` identity, the broker handshake, and the slot's records with their outbound links. |
 | [`weather-station-openmeteo`](weather-station-openmeteo) | Station template that needs no hardware: it fetches real observations from Open-Meteo for a location and publishes them into an assigned slot. |
 | [`weather-station-knx`](weather-station-knx) | Station template fed by a real KNX installation: temperature and humidity read off the bus through a KNXnet/IP gateway, throttled, and published into an assigned slot. |
 | [`weather-hub`](weather-hub) | Aggregating hub: a fixed pool of station slots, dew point derived per slot, exposed over AimX for the CLI and the dashboard. |
 
-Each station is self-contained: copy one out as the starting point for a station
-of your own, and it carries its own profile parsing and broker handling with it.
+Copy a station out as the starting point for one of your own. What you copy is
+the part that makes it your station — the poll loop, the bus decoding, the
+publish cadence. What it joins the mesh with comes from `weather-station`, so
+two stations cannot drift apart on the slot format, the profile version or the
+revocation policy.
+
+`weather-station` has two doors. `Station` is the default: join, supply one
+async task per quantity, run — the shape `weather-station-openmeteo` uses.
+`MeshSlot` hands the builder back unbuilt for stations whose readings arrive
+*through* the record graph off a connector AimDB already speaks, which is what
+`weather-station-knx` does with KNX.
 
 ## Data model
 

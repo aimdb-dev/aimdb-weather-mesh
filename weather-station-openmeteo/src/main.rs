@@ -9,23 +9,25 @@
 //! ```
 //!
 //! Publishes `Temperature` and `Humidity` into its assigned slot
-//! (`station/{slot}/…`), each fed by a `.source()` so the poll loops run as
-//! part of the record graph. `DewPoint` is not published here: the hub derives
-//! it per slot from those two records.
+//! (`station/{slot}/…`), each fed by a source so the poll loops run as part of
+//! the record graph. `DewPoint` is not published here: the hub derives it per
+//! slot from those two records.
+//!
+//! Everything the mesh defines — the profile format, the slot identity, the
+//! broker handshake, the records and their outbound links — comes from
+//! [`weather_station`]. What is left below is what a station of your own would
+//! change: where the readings come from.
 
 mod open_meteo;
 
-use aimdb_core::{buffer::BufferCfg, AimDbBuilder, Producer, RuntimeContext, StringKey};
-use aimdb_data_contracts::Linkable;
-use aimdb_mqtt_connector::MqttConnector;
-use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
+use aimdb_core::{Producer, RuntimeContext};
 use clap::Parser;
 use open_meteo::OpenMeteoClient;
 use serde::Deserialize;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::info;
 use weather_contracts::{Humidity, Temperature};
+use weather_station::{check_profile_version, AppProfile, BrokerProfile, Station};
 
 /// Open-Meteo refreshes roughly every 15 minutes; polling every 5 keeps the
 /// slot current without hammering a free API.
@@ -40,33 +42,14 @@ struct Cli {
     config: std::path::PathBuf,
 }
 
-/// The station profile. Unknown fields are ignored so the provisioning service
-/// can extend the format without a version bump.
+/// The station profile: the mesh's tables, and nothing of this station's own —
+/// the coordinates it needs are already in `[app]`.
 #[derive(Debug, Deserialize)]
 struct StationProfile {
     profile_version: u64,
     station_id: String,
     broker: BrokerProfile,
     app: AppProfile,
-}
-
-#[derive(Debug, Deserialize)]
-struct BrokerProfile {
-    url: String,
-    username: String,
-    password: String,
-}
-
-/// The profile's `app` table: station name plus the coordinates the mesh
-/// published for it, coarsened to two decimals (~1 km).
-///
-/// The coordinates are optional so a hand-written profile can leave the
-/// location to `WEATHER_LAT`/`WEATHER_LON` — see [`resolve_location`].
-#[derive(Debug, Deserialize)]
-struct AppProfile {
-    name: String,
-    lat: Option<f64>,
-    lon: Option<f64>,
 }
 
 /// Vienna — the fallback location when neither the profile nor the
@@ -103,122 +86,39 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    // `aimdb` is the runtime-context log target (`ctx.log()` via the adapter) —
-    // without it in the fallback filter, everything the sources report is
-    // invisible.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                "weather_station_openmeteo=info,aimdb_core=info,aimdb=info".into()
-            }),
-        )
-        .init();
+    weather_station::init_tracing("weather_station_openmeteo");
 
     let cli = Cli::parse();
     let profile: StationProfile = toml::from_str(&std::fs::read_to_string(&cli.config)?)?;
-
-    if profile.profile_version != 1 {
-        return Err(format!(
-            "unsupported profile_version {} (this station understands 1) — \
-             update the station, or have the profile re-issued for version 1",
-            profile.profile_version
-        )
-        .into());
-    }
-
-    // Station identities are slot-scoped: station_id = "slot-<n>" maps onto the
-    // hub's pool records station.<n>.*.
-    let slot: u16 = profile
-        .station_id
-        .strip_prefix("slot-")
-        .and_then(|n| n.parse().ok())
-        .ok_or_else(|| {
-            format!(
-                "station_id '{}' is not of the form slot-<n> — \
-                 is this profile from a weather-mesh deployment?",
-                profile.station_id
-            )
-        })?;
+    check_profile_version(profile.profile_version)?;
 
     let (lat, lon, location_source) = resolve_location(
         (profile.app.lat, profile.app.lon),
         (env_coord("WEATHER_LAT")?, env_coord("WEATHER_LON")?),
     )?;
 
-    info!("🚀 Starting Weather Station \"{}\"", profile.app.name);
-    info!(
-        "📡 Broker: {} (slot {})",
-        redact_url(&profile.broker.url),
-        slot
-    );
-    info!("🌍 Weather location: {lat:.2}°N, {lon:.2}°E ({location_source})");
-
-    let client_id = format!("weather-station-{slot}");
-
-    // Fail fast on a dead credential instead of retrying forever, so a revoked
-    // slot reports itself at startup.
-    preflight_broker_check(&profile.broker, &client_id).await?;
-
-    let mqtt_url = url_with_credentials(&profile.broker)?;
-
-    let adapter = Arc::new(TokioAdapter::new()?);
-
-    let mut builder = AimDbBuilder::new()
-        .runtime(adapter)
-        .with_connector(MqttConnector::new(&mqtt_url).with_client_id(&client_id));
-
     // One client behind both records: the two sources poll on the same cadence
     // and share the observation, so a cycle costs one HTTP request and both
     // records carry the same timestamp.
     let client = Arc::new(OpenMeteoClient::new(lat, lon));
-
-    let temp_key = StringKey::intern(format!("station.{slot}.temperature"));
-    let temp_topic = format!("mqtt://station/{slot}/temperature");
     let temp_client = Arc::clone(&client);
-    builder.configure::<Temperature>(temp_key, |reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 10 });
-        reg.source(move |ctx, producer| temperature_source(ctx, producer, temp_client));
-        reg.link_to(&temp_topic)
-            .with_serializer(|_ctx, t: &Temperature| {
-                t.to_bytes()
-                    .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
-            })
-            .finish();
-    });
 
-    let humidity_key = StringKey::intern(format!("station.{slot}.humidity"));
-    let humidity_topic = format!("mqtt://station/{slot}/humidity");
-    builder.configure::<Humidity>(humidity_key, |reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 10 });
-        reg.source(move |ctx, producer| humidity_source(ctx, producer, client));
-        reg.link_to(&humidity_topic)
-            .with_serializer(|_ctx, h: &Humidity| {
-                h.to_bytes()
-                    .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
-            })
-            .finish();
-    });
+    let station = Station::join(&profile.station_id, &profile.app, &profile.broker).await?;
+    info!("🌍 Weather location: {lat:.2}°N, {lon:.2}°E ({location_source})");
 
-    info!("");
-    info!("🎯 Weather Station \"{}\" ready!", profile.app.name);
-    info!("📡 Publishing to MQTT topics:");
-    info!("   - {}", temp_topic);
-    info!("   - {}", humidity_topic);
-    info!("   (dew point is derived at the hub from these two)");
-    info!("");
-    info!("Press Ctrl+C to stop");
-
-    // `.run()` drives the sources, the outbound links and the connector on one
-    // task set; everything this station does is in the graph above.
-    builder.run().await?;
+    station
+        .temperature(move |ctx, producer| temperature_source(ctx, producer, temp_client))
+        .humidity(move |ctx, producer| humidity_source(ctx, producer, client))
+        .run()
+        .await?;
 
     Ok(())
 }
 
 /// Feeds `station.{slot}.temperature`.
 ///
-/// Replacing the `client.current` call with a sensor read leaves the record
-/// wiring above unchanged.
+/// Replacing the `client.current` call with a sensor read leaves everything
+/// above unchanged — this is the whole of what a station template supplies.
 async fn temperature_source(
     ctx: RuntimeContext,
     producer: Producer<Temperature>,
@@ -259,62 +159,6 @@ async fn humidity_source(
         }
 
         ctx.time().sleep_secs(POLL_INTERVAL_SECS).await;
-    }
-}
-
-/// One CONNECT → CONNACK round-trip before building the database.
-///
-/// The connector's event loop retries connection errors forever, which suits a
-/// broker that comes and goes but not a credential the mesh can revoke: a
-/// revoked slot would retry silently. Probing once turns an auth rejection into
-/// an error message at startup.
-async fn preflight_broker_check(
-    broker: &BrokerProfile,
-    client_id: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let (tls, host, port) = split_broker_url(&broker.url)?;
-
-    let mut opts = rumqttc::MqttOptions::new(format!("{client_id}-preflight"), host, port);
-    opts.set_keep_alive(Duration::from_secs(10));
-    opts.set_credentials(&broker.username, &broker.password);
-    if tls {
-        opts.set_transport(rumqttc::Transport::Tls(rumqttc::TlsConfiguration::Native));
-    }
-
-    let (client, mut event_loop) = rumqttc::AsyncClient::new(opts, 4);
-    let result = tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            match event_loop.poll().await {
-                Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(_))) => return Ok(()),
-                Ok(_) => continue,
-                Err(e) => return Err(e),
-            }
-        }
-    })
-    .await;
-    let _ = client.disconnect().await;
-
-    match result {
-        Ok(Ok(())) => {
-            info!("✅ Broker accepted the station credential");
-            Ok(())
-        }
-        Ok(Err(rumqttc::ConnectionError::ConnectionRefused(code))) => Err(format!(
-            "the broker rejected this station's credential ({code:?}).\n  \
-             The slot was likely revoked (silent for 30 days, or by the operator).\n  \
-             Re-join the mesh to get a fresh slot."
-        )
-        .into()),
-        Ok(Err(e)) => Err(format!(
-            "cannot reach the broker at {}: {e}",
-            redact_url(&broker.url)
-        )
-        .into()),
-        Err(_) => Err(format!(
-            "timed out connecting to the broker at {}",
-            redact_url(&broker.url)
-        )
-        .into()),
     }
 }
 
@@ -360,65 +204,14 @@ fn env_coord(var: &str) -> Result<Option<f64>, String> {
     }
 }
 
-/// Split a `mqtt[s]://host[:port]` broker URL into (tls, host, port).
-fn split_broker_url(url: &str) -> Result<(bool, String, u16), String> {
-    let (scheme, rest) = url
-        .split_once("://")
-        .ok_or_else(|| format!("broker URL '{url}' has no scheme"))?;
-    let tls = match scheme {
-        "mqtt" => false,
-        "mqtts" => true,
-        other => return Err(format!("unsupported broker scheme '{other}'")),
-    };
-    let authority = rest.split('/').next().unwrap_or(rest);
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((host, port)) => (
-            host.to_string(),
-            port.parse()
-                .map_err(|_| format!("invalid broker port in '{url}'"))?,
-        ),
-        None => (authority.to_string(), if tls { 8883 } else { 1883 }),
-    };
-    Ok((tls, host, port))
-}
-
-/// Embed the profile's credential into the connector URL
-/// (`mqtts://user:pass@host:port`), the form the MQTT connector parses.
-fn url_with_credentials(broker: &BrokerProfile) -> Result<String, String> {
-    let (scheme, rest) = broker
-        .url
-        .split_once("://")
-        .ok_or_else(|| format!("broker URL '{}' has no scheme", broker.url))?;
-    Ok(format!(
-        "{scheme}://{}:{}@{rest}",
-        broker.username, broker.password
-    ))
-}
-
-/// Strip URL-embedded credentials before logging.
-fn redact_url(url: &str) -> String {
-    if let Some((scheme, rest)) = url.split_once("://") {
-        if let Some((_creds, host)) = rest.rsplit_once('@') {
-            return format!("{scheme}://…@{host}");
-        }
-    }
-    url.to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn broker(url: &str) -> BrokerProfile {
-        BrokerProfile {
-            url: url.to_string(),
-            username: "station-17".to_string(),
-            password: "s3cret".to_string(),
-        }
-    }
-
+    /// The mesh tables come from `weather-station` and are tested there; what
+    /// this station adds is reading its location out of `[app]`.
     #[test]
-    fn profile_parses_all_fields() {
+    fn profile_parses_the_stations_own_fields() {
         let profile: StationProfile = toml::from_str(
             r#"
             profile_version = 1
@@ -436,59 +229,9 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(profile.profile_version, 1);
-        assert_eq!(profile.station_id, "slot-17");
         assert_eq!(profile.app.name, "graz-balcony");
         assert_eq!(profile.app.lat, Some(47.07));
         assert_eq!(profile.app.lon, Some(15.44));
-    }
-
-    /// A hand-written profile may leave the location to the environment.
-    #[test]
-    fn profile_parses_without_coordinates() {
-        let profile: StationProfile = toml::from_str(
-            r#"
-            profile_version = 1
-            station_id = "slot-2"
-
-            [broker]
-            url = "mqtt://localhost:1883"
-            username = "station-2"
-            password = "local"
-
-            [app]
-            name = "local-test"
-            "#,
-        )
-        .unwrap();
-        assert_eq!(profile.app.lat, None);
-        assert_eq!(profile.app.lon, None);
-    }
-
-    /// The provisioning service may add fields without a version bump.
-    #[test]
-    fn profile_ignores_unknown_fields() {
-        let profile: StationProfile = toml::from_str(
-            r#"
-            profile_version = 1
-            station_id = "slot-3"
-            issued_at = "2026-07-30T10:00:00Z"
-
-            [broker]
-            url = "mqtt://localhost:1883"
-            username = "station-3"
-            password = "s3cret"
-            keepalive = 60
-
-            [app]
-            name = "graz-balcony"
-            lat = 47.07
-            lon = 15.44
-            elevation = 353
-            "#,
-        )
-        .unwrap();
-        assert_eq!(profile.station_id, "slot-3");
     }
 
     #[test]
@@ -515,40 +258,5 @@ mod tests {
     fn location_rejects_half_a_pair() {
         assert!(resolve_location((Some(47.07), None), (None, None)).is_err());
         assert!(resolve_location((None, None), (None, Some(15.44))).is_err());
-    }
-
-    #[test]
-    fn broker_url_splits_with_scheme_defaults() {
-        assert_eq!(
-            split_broker_url("mqtts://broker.example.com:8883").unwrap(),
-            (true, "broker.example.com".to_string(), 8883)
-        );
-        assert_eq!(
-            split_broker_url("mqtts://broker.example.com").unwrap(),
-            (true, "broker.example.com".to_string(), 8883)
-        );
-        assert_eq!(
-            split_broker_url("mqtt://localhost").unwrap(),
-            (false, "localhost".to_string(), 1883)
-        );
-        assert!(split_broker_url("http://x").is_err());
-        assert!(split_broker_url("no-scheme").is_err());
-    }
-
-    #[test]
-    fn connector_url_carries_credentials() {
-        assert_eq!(
-            url_with_credentials(&broker("mqtts://broker.example.com:8883")).unwrap(),
-            "mqtts://station-17:s3cret@broker.example.com:8883"
-        );
-    }
-
-    #[test]
-    fn redaction_hides_credentials() {
-        assert_eq!(
-            redact_url("mqtts://station-17:s3cret@broker.example.com:8883"),
-            "mqtts://…@broker.example.com:8883"
-        );
-        assert_eq!(redact_url("mqtt://localhost"), "mqtt://localhost");
     }
 }

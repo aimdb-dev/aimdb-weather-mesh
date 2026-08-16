@@ -1,0 +1,42 @@
+[package]
+name = "weather-station"
+version = "0.1.0"
+edition = "2021"
+description = "Mesh-join behaviour shared by every weather mesh station: profile, handshake and the slot's record graph"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+# `migratable` is not optional here: Temperature's `Linkable` impl (the
+# `to_bytes` the slot's outbound links publish through) is gated on both
+# features.
+weather-contracts = { path = "../weather-contracts", features = [
+    "linkable",
+    "migratable",
+] }
+aimdb-core = { path = "../../aimdb/aimdb-core" }
+aimdb-tokio-adapter = { path = "../../aimdb/aimdb-tokio-adapter" }
+aimdb-data-contracts = { path = "../../aimdb/aimdb-data-contracts", features = [
+    "linkable",
+    "migratable",
+] }
+# The connector's rumqttc carries `use-native-tls` unconditionally, so
+# `mqtts://` profile URLs work without an extra feature here.
+aimdb-mqtt-connector = { path = "../../aimdb/aimdb-mqtt-connector", features = [
+    "tokio-runtime",
+] }
+
+tokio = { version = "1", features = ["time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2"
+# Pre-flight CONNECT probe only, so a revoked credential fails at startup; the
+# data path goes through aimdb-mqtt-connector. Same feature set as the
+# connector's own rumqttc.
+rumqttc = { version = "0.25", default-features = false, features = [
+    "use-native-tls",
+] }
+
+[dev-dependencies]
+toml = "0.8"

@@ -22,22 +22,26 @@
 //!
 //! `DewPoint` is not published here: the hub derives it per slot from those
 //! two records.
+//!
+//! The mesh records on the right of that diagram, and the handshake that earns
+//! the right to publish into them, come from [`weather_station`]. This station
+//! takes the advanced door — [`MeshSlot`] rather than `Station` — because its
+//! readings arrive *through* the graph off the KNX connector, not from a source
+//! it could hand to the facade.
 
 mod dpt;
 mod knx;
 
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder, RecordKey, StringKey};
-use aimdb_data_contracts::Linkable;
 use aimdb_knx_connector::KnxConnector;
-use aimdb_mqtt_connector::MqttConnector;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use clap::Parser;
 use knx::{KnxConfig, KnxProfile};
 use serde::Deserialize;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::info;
 use weather_contracts::{Humidity, Temperature};
+use weather_station::{check_profile_version, AppProfile, BrokerProfile, MeshSlot};
 
 /// Station-local records carrying the bus reading verbatim. They never leave
 /// the process — the mesh contract is `station.<n>.*`.
@@ -53,13 +57,9 @@ struct Cli {
     config: std::path::PathBuf,
 }
 
-/// The station profile. A superset of the Open-Meteo station's: same
-/// `profile_version` / `station_id` / `[broker]` / `[app]`, plus `[knx]`, so a
+/// The station profile: the mesh's tables plus this station's `[knx]`, so a
 /// profile issued by the mesh provisioning service works unchanged once
 /// `[knx]` is appended.
-///
-/// Unknown fields are ignored so the provisioning service can extend the
-/// format without a version bump.
 #[derive(Debug, Deserialize)]
 struct StationProfile {
     profile_version: u64,
@@ -67,26 +67,6 @@ struct StationProfile {
     broker: BrokerProfile,
     app: AppProfile,
     knx: KnxProfile,
-}
-
-#[derive(Debug, Deserialize)]
-struct BrokerProfile {
-    url: String,
-    username: String,
-    password: String,
-}
-
-/// The profile's `app` table.
-///
-/// `lat` / `lon` are accepted and ignored: a mesh-issued profile carries them,
-/// and this station has no location-dependent behaviour to apply them to.
-#[derive(Debug, Deserialize)]
-struct AppProfile {
-    name: String,
-    #[allow(dead_code)]
-    lat: Option<f64>,
-    #[allow(dead_code)]
-    lon: Option<f64>,
 }
 
 #[tokio::main]
@@ -100,42 +80,11 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    // `aimdb` is the runtime-context log target (`ctx.log()` via the adapter) —
-    // without it in the fallback filter, every telegram the deserializers
-    // accept or reject is invisible, and a wrong group address looks exactly
-    // like a healthy station.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "weather_station_knx=info,aimdb_core=info,aimdb=info".into()),
-        )
-        .init();
+    weather_station::init_tracing("weather_station_knx");
 
     let cli = Cli::parse();
     let profile: StationProfile = toml::from_str(&std::fs::read_to_string(&cli.config)?)?;
-
-    if profile.profile_version != 1 {
-        return Err(format!(
-            "unsupported profile_version {} (this station understands 1) — \
-             update the station, or have the profile re-issued for version 1",
-            profile.profile_version
-        )
-        .into());
-    }
-
-    // Station identities are slot-scoped: station_id = "slot-<n>" maps onto the
-    // hub's pool records station.<n>.*.
-    let slot: u16 = profile
-        .station_id
-        .strip_prefix("slot-")
-        .and_then(|n| n.parse().ok())
-        .ok_or_else(|| {
-            format!(
-                "station_id '{}' is not of the form slot-<n> — \
-                 is this profile from a weather-mesh deployment?",
-                profile.station_id
-            )
-        })?;
+    check_profile_version(profile.profile_version)?;
 
     // Group addresses, datapoint types and the throttle window are validated
     // before anything is built: a typo'd address would otherwise show up as a
@@ -148,51 +97,28 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // record after the first value, so refuse to start instead.
     check_wall_clock()?;
 
-    info!("🚀 Starting Weather Station \"{}\"", profile.app.name);
-    info!(
-        "📡 Broker: {} (slot {})",
-        redact_url(&profile.broker.url),
-        slot
-    );
-
-    let client_id = format!("weather-station-{slot}");
-
-    // Fail fast on a dead credential instead of retrying forever, so a revoked
-    // slot reports itself at startup.
+    // The handshake, including the pre-flight CONNECT that turns a revoked slot
+    // into a startup error.
     //
-    // There is deliberately no matching gateway pre-flight: the KNX
-    // connector's retry loop is the right behaviour for a LAN device that
-    // reboots, and a station that refused to start because the gateway was
-    // briefly down would be worse than one that reconnects.
-    preflight_broker_check(&profile.broker, &client_id).await?;
+    // There is deliberately no matching gateway pre-flight: the KNX connector's
+    // retry loop is the right behaviour for a LAN device that reboots, and a
+    // station that refused to start because the gateway was briefly down would
+    // be worse than one that reconnects.
+    let mesh = MeshSlot::join(&profile.station_id, &profile.app, &profile.broker).await?;
 
-    let mqtt_url = url_with_credentials(&profile.broker)?;
-    let adapter = Arc::new(TokioAdapter::new()?);
-
-    let mut builder = AimDbBuilder::new()
-        .runtime(adapter)
-        .with_connector(KnxConnector::new(&knx.gateway))
-        .with_connector(MqttConnector::new(&mqtt_url).with_client_id(&client_id));
-
-    let temp_topic = format!("mqtt://station/{slot}/temperature");
-    let humidity_topic = format!("mqtt://station/{slot}/humidity");
-    let mesh_temp_key = StringKey::intern(format!("station.{slot}.temperature"));
-    let mesh_humidity_key = StringKey::intern(format!("station.{slot}.humidity"));
-
-    register_temperature(&mut builder, &knx, mesh_temp_key, &temp_topic);
-    register_humidity(&mut builder, &knx, mesh_humidity_key, &humidity_topic);
-
-    log_route_table(
-        &knx,
-        (mesh_temp_key, &temp_topic),
-        (mesh_humidity_key, &humidity_topic),
+    // The KNX connector goes on before `attach`: a `link_from` is only accepted
+    // once a connector claims its scheme, and the raw records below use one.
+    let mut builder = mesh.attach(
+        AimDbBuilder::new()
+            .runtime(Arc::new(TokioAdapter::new()?))
+            .with_connector(KnxConnector::new(&knx.gateway)),
     );
 
-    info!("");
-    info!("🎯 Weather Station \"{}\" ready!", profile.app.name);
-    info!("   (dew point is derived at the hub from these two)");
-    info!("");
-    info!("Press Ctrl+C to stop");
+    register_temperature(&mut builder, &knx, mesh.temperature_key());
+    register_humidity(&mut builder, &knx, mesh.humidity_key());
+
+    log_route_table(&knx, &mesh);
+    mesh.log_ready();
 
     // `.run()` drives both connectors, the transforms and the outbound links
     // on one task set; everything this station does is in the graph above.
@@ -201,13 +127,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// `knx.temperature` ← the bus, then `station.<n>.temperature` ← the throttle.
-fn register_temperature(
-    builder: &mut AimDbBuilder,
-    knx: &KnxConfig,
-    mesh_key: StringKey,
-    topic: &str,
-) {
+/// `knx.temperature` ← the bus, then the throttle into the mesh record.
+///
+/// The mesh record's buffer, outbound link and serializer are already on the
+/// builder ([`MeshSlot::attach`]); configuring the key again adds this
+/// station's feed to it.
+fn register_temperature(builder: &mut AimDbBuilder, knx: &KnxConfig, mesh_key: StringKey) {
     let ga = knx.temperature.group_address.clone();
     let dpt = knx.temperature.dpt;
     let link = format!("knx://{ga}");
@@ -229,31 +154,17 @@ fn register_temperature(
 
     let min_publish_ms = knx.min_publish_ms;
     builder.configure::<Temperature>(mesh_key, |reg| {
-        // SpmcRing matches the Open-Meteo station and gives the outbound pump
-        // slack against a reconnecting broker.
-        reg.buffer(BufferCfg::SpmcRing { capacity: 10 });
         reg.transform::<Temperature, _>(RAW_TEMPERATURE_KEY, move |b| {
             b.with_state(Throttle::default())
                 .on_value(move |v: &Temperature, st: &mut Throttle| {
                     admit(st, v.timestamp, min_publish_ms, "temperature").then(|| v.clone())
                 })
         });
-        reg.link_to(topic)
-            .with_serializer(|_ctx, t: &Temperature| {
-                t.to_bytes()
-                    .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
-            })
-            .finish();
     });
 }
 
-/// `knx.humidity` ← the bus, then `station.<n>.humidity` ← the throttle.
-fn register_humidity(
-    builder: &mut AimDbBuilder,
-    knx: &KnxConfig,
-    mesh_key: StringKey,
-    topic: &str,
-) {
+/// `knx.humidity` ← the bus, then the throttle into the mesh record.
+fn register_humidity(builder: &mut AimDbBuilder, knx: &KnxConfig, mesh_key: StringKey) {
     let ga = knx.humidity.group_address.clone();
     let dpt = knx.humidity.dpt;
     let link = format!("knx://{ga}");
@@ -274,19 +185,12 @@ fn register_humidity(
 
     let min_publish_ms = knx.min_publish_ms;
     builder.configure::<Humidity>(mesh_key, |reg| {
-        reg.buffer(BufferCfg::SpmcRing { capacity: 10 });
         reg.transform::<Humidity, _>(RAW_HUMIDITY_KEY, move |b| {
             b.with_state(Throttle::default())
                 .on_value(move |v: &Humidity, st: &mut Throttle| {
                     admit(st, v.timestamp, min_publish_ms, "humidity").then(|| v.clone())
                 })
         });
-        reg.link_to(topic)
-            .with_serializer(|_ctx, h: &Humidity| {
-                h.to_bytes()
-                    .map_err(|_| aimdb_core::connector::SerializeError::InvalidData)
-            })
-            .finish();
     });
 }
 
@@ -312,6 +216,11 @@ fn reject(ctx: &aimdb_core::RuntimeContext, ga: &str, data: &[u8], e: dpt::Decod
 
 /// At most one published value per `min_interval_ms`. The first value always
 /// passes.
+///
+/// Publish rate is the station's own: the mesh cares that a slot publishes both
+/// quantities, not how often. A bus sensor reports on change, which is the one
+/// cadence a broker cannot be handed directly, so this station throttles and
+/// the Open-Meteo one does not.
 ///
 /// A pure function of the value's own timestamp — the transform keeps no clock
 /// of its own, so it behaves the same on any runtime.
@@ -359,11 +268,10 @@ fn admit(st: &mut Throttle, ts_ms: u64, min_interval_ms: u64, quantity: &str) ->
 /// station starts, connects to everything, and publishes nothing. This table
 /// plus the per-telegram info logs are what turn that into a five-second
 /// diagnosis.
-fn log_route_table(
-    knx: &KnxConfig,
-    (temp_key, temp_topic): (StringKey, &str),
-    (humidity_key, humidity_topic): (StringKey, &str),
-) {
+fn log_route_table(knx: &KnxConfig, mesh: &MeshSlot) {
+    let temp_key = mesh.temperature_key();
+    let humidity_key = mesh.humidity_key();
+
     // Align the record-key column so the two routes read as a table.
     let width = temp_key.as_str().len().max(humidity_key.as_str().len());
 
@@ -373,14 +281,14 @@ fn log_route_table(
         knx.temperature.group_address,
         knx.temperature.dpt.identifier(),
         temp_key.as_str(),
-        temp_topic,
+        mesh.temperature_topic(),
     );
     info!(
         "   {} (DPT {}) → {:width$} → {}",
         knx.humidity.group_address,
         knx.humidity.dpt.identifier(),
         humidity_key.as_str(),
-        humidity_topic,
+        mesh.humidity_topic(),
     );
     if knx.min_publish_ms == 0 {
         info!("   throttle: disabled — every telegram is published");
@@ -419,122 +327,9 @@ fn unix_millis(ctx: &aimdb_core::RuntimeContext) -> u64 {
         .unwrap_or(0)
 }
 
-// ============================================================================
-// Broker plumbing (shared shape with weather-station-openmeteo)
-// ============================================================================
-
-/// One CONNECT → CONNACK round-trip before building the database.
-///
-/// The connector's event loop retries connection errors forever, which suits a
-/// broker that comes and goes but not a credential the mesh can revoke: a
-/// revoked slot would retry silently. Probing once turns an auth rejection into
-/// an error message at startup.
-async fn preflight_broker_check(
-    broker: &BrokerProfile,
-    client_id: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let (tls, host, port) = split_broker_url(&broker.url)?;
-
-    let mut opts = rumqttc::MqttOptions::new(format!("{client_id}-preflight"), host, port);
-    opts.set_keep_alive(Duration::from_secs(10));
-    opts.set_credentials(&broker.username, &broker.password);
-    if tls {
-        opts.set_transport(rumqttc::Transport::Tls(rumqttc::TlsConfiguration::Native));
-    }
-
-    let (client, mut event_loop) = rumqttc::AsyncClient::new(opts, 4);
-    let result = tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            match event_loop.poll().await {
-                Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(_))) => return Ok(()),
-                Ok(_) => continue,
-                Err(e) => return Err(e),
-            }
-        }
-    })
-    .await;
-    let _ = client.disconnect().await;
-
-    match result {
-        Ok(Ok(())) => {
-            info!("✅ Broker accepted the station credential");
-            Ok(())
-        }
-        Ok(Err(rumqttc::ConnectionError::ConnectionRefused(code))) => Err(format!(
-            "the broker rejected this station's credential ({code:?}).\n  \
-             The slot was likely revoked (silent for 30 days, or by the operator).\n  \
-             Re-join the mesh to get a fresh slot."
-        )
-        .into()),
-        Ok(Err(e)) => Err(format!(
-            "cannot reach the broker at {}: {e}",
-            redact_url(&broker.url)
-        )
-        .into()),
-        Err(_) => Err(format!(
-            "timed out connecting to the broker at {}",
-            redact_url(&broker.url)
-        )
-        .into()),
-    }
-}
-
-/// Split a `mqtt[s]://host[:port]` broker URL into (tls, host, port).
-fn split_broker_url(url: &str) -> Result<(bool, String, u16), String> {
-    let (scheme, rest) = url
-        .split_once("://")
-        .ok_or_else(|| format!("broker URL '{url}' has no scheme"))?;
-    let tls = match scheme {
-        "mqtt" => false,
-        "mqtts" => true,
-        other => return Err(format!("unsupported broker scheme '{other}'")),
-    };
-    let authority = rest.split('/').next().unwrap_or(rest);
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((host, port)) => (
-            host.to_string(),
-            port.parse()
-                .map_err(|_| format!("invalid broker port in '{url}'"))?,
-        ),
-        None => (authority.to_string(), if tls { 8883 } else { 1883 }),
-    };
-    Ok((tls, host, port))
-}
-
-/// Embed the profile's credential into the connector URL
-/// (`mqtts://user:pass@host:port`), the form the MQTT connector parses.
-fn url_with_credentials(broker: &BrokerProfile) -> Result<String, String> {
-    let (scheme, rest) = broker
-        .url
-        .split_once("://")
-        .ok_or_else(|| format!("broker URL '{}' has no scheme", broker.url))?;
-    Ok(format!(
-        "{scheme}://{}:{}@{rest}",
-        broker.username, broker.password
-    ))
-}
-
-/// Strip URL-embedded credentials before logging.
-fn redact_url(url: &str) -> String {
-    if let Some((scheme, rest)) = url.split_once("://") {
-        if let Some((_creds, host)) = rest.rsplit_once('@') {
-            return format!("{scheme}://…@{host}");
-        }
-    }
-    url.to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn broker(url: &str) -> BrokerProfile {
-        BrokerProfile {
-            url: url.to_string(),
-            username: "station-17".to_string(),
-            password: "s3cret".to_string(),
-        }
-    }
 
     const PROFILE: &str = r#"
         profile_version = 1
@@ -670,40 +465,5 @@ mod tests {
         assert!(t.admit(1_000, 0));
         assert!(t.admit(1_000, 0));
         assert!(t.admit(1_001, 0));
-    }
-
-    #[test]
-    fn broker_url_splits_with_scheme_defaults() {
-        assert_eq!(
-            split_broker_url("mqtts://broker.example.com:8883").unwrap(),
-            (true, "broker.example.com".to_string(), 8883)
-        );
-        assert_eq!(
-            split_broker_url("mqtts://broker.example.com").unwrap(),
-            (true, "broker.example.com".to_string(), 8883)
-        );
-        assert_eq!(
-            split_broker_url("mqtt://localhost").unwrap(),
-            (false, "localhost".to_string(), 1883)
-        );
-        assert!(split_broker_url("http://x").is_err());
-        assert!(split_broker_url("no-scheme").is_err());
-    }
-
-    #[test]
-    fn connector_url_carries_credentials() {
-        assert_eq!(
-            url_with_credentials(&broker("mqtts://broker.example.com:8883")).unwrap(),
-            "mqtts://station-17:s3cret@broker.example.com:8883"
-        );
-    }
-
-    #[test]
-    fn redaction_hides_credentials() {
-        assert_eq!(
-            redact_url("mqtts://station-17:s3cret@broker.example.com:8883"),
-            "mqtts://…@broker.example.com:8883"
-        );
-        assert_eq!(redact_url("mqtt://localhost"), "mqtt://localhost");
     }
 }
