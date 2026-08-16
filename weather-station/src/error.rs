@@ -47,4 +47,37 @@ pub enum StationError {
     /// The record graph failed to build or run.
     #[error(transparent)]
     Db(#[from] aimdb_core::DbError),
+
+    /// The profile file could not be read.
+    #[cfg(feature = "sync")]
+    #[error("cannot read the station profile at {path}: {reason}")]
+    ProfileUnreadable { path: String, reason: String },
+
+    /// The profile file is not a station profile.
+    #[cfg(feature = "sync")]
+    #[error("the station profile at {path} is malformed: {reason}")]
+    ProfileMalformed { path: String, reason: String },
+
+    /// The graph was attached but never started publishing.
+    ///
+    /// Producing before the outbound links are live loses the value silently
+    /// (the slot's buffer is a broadcast, so a reader that subscribes later
+    /// never sees it), so [`StationHandle`](crate::StationHandle) refuses to
+    /// hand back a station it cannot prove is pumping.
+    #[cfg(feature = "sync")]
+    #[error("the record graph did not start within {0:?}")]
+    GraphStartTimeout(std::time::Duration),
+
+    /// The system clock is unusable, so readings would carry no timestamp.
+    #[cfg(feature = "sync")]
+    #[error(
+        "the system clock is before the Unix epoch, so readings would carry no \
+         usable timestamp — set the clock (or NTP) before starting the station"
+    )]
+    NoWallClock,
+
+    /// The sync runtime bridge failed.
+    #[cfg(feature = "sync")]
+    #[error(transparent)]
+    Sync(#[from] aimdb_sync::SyncError),
 }

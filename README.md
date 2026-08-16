@@ -41,11 +41,20 @@ publish cadence. What it joins the mesh with comes from `weather-station`, so
 two stations cannot drift apart on the slot format, the profile version or the
 revocation policy.
 
-`weather-station` has two doors. `Station` is the default: join, supply one
+`weather-station` has three doors. `Station` is the default: join, supply one
 async task per quantity, run — the shape `weather-station-openmeteo` uses.
 `MeshSlot` hands the builder back unbuilt for stations whose readings arrive
 *through* the record graph off a connector AimDB already speaks, which is what
-`weather-station-knx` does with KNX.
+`weather-station-knx` does with KNX. `StationHandle`, behind the `sync`
+feature, is for a caller that owns its own loop and calls
+`publish_temperature(21.5)` when it has a reading — a plain thread, or a
+Python, C or C++ station reaching Rust through an FFI layer:
+
+```bash
+cargo test -p weather-station --features sync
+# end-to-end against a broker:
+mosquitto -p 1883 & cargo test -p weather-station --features sync -- --ignored
+```
 
 ## Data model
 

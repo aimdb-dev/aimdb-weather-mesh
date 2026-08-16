@@ -37,6 +37,25 @@
 //! handshake and attaches the same mesh records, but hands the builder back
 //! unbuilt so the station can add its intake.
 //!
+//! ## The blocking door
+//!
+//! Both doors above are async: the graph owns the loop and the station hands it
+//! a task. A caller that owns its own loop — a plain thread, or a Python, C or
+//! C++ station reaching Rust through an FFI layer — wants the inverse, and gets
+//! [`StationHandle`] behind the `sync` feature:
+//!
+//! ```text
+//! let station = StationHandle::open_profile("station.toml")?;
+//! station.publish_temperature(read_sensor())?;
+//! ```
+//!
+//! (Shown rather than compiled: the type is absent without the feature.
+//! [`StationHandle`]'s own example is the compiled one.)
+//!
+//! The record graph is the same one the async doors build; only who drives it
+//! differs. That is the point — a Python station and a Rust station join the
+//! mesh through one implementation, so neither can drift from the other.
+//!
 //! ## What stays in the template
 //!
 //! Anything above the mesh contract: the source implementation, the profile's
@@ -46,12 +65,16 @@
 
 mod broker;
 mod error;
+#[cfg(feature = "sync")]
+mod handle;
 mod profile;
 mod slot;
 mod station;
 
 pub use broker::redact_url;
 pub use error::StationError;
+#[cfg(feature = "sync")]
+pub use handle::StationHandle;
 pub use profile::{
     check_profile_version, slot_from_station_id, AppProfile, BrokerProfile, PROFILE_VERSION,
 };

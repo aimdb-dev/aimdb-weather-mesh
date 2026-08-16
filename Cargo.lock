@@ -81,6 +81,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aimdb-sync"
+version = "0.6.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-tokio-adapter",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "aimdb-tcp-connector"
 version = "0.1.0"
 dependencies = [
@@ -1946,6 +1956,7 @@ dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
  "aimdb-mqtt-connector",
+ "aimdb-sync",
  "aimdb-tokio-adapter",
  "rumqttc",
  "serde",

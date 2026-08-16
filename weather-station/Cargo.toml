@@ -6,6 +6,14 @@ description = "Mesh-join behaviour shared by every weather mesh station: profile
 license = "MIT OR Apache-2.0"
 publish = false
 
+[features]
+default = []
+# `StationHandle`: the blocking door, for callers that own their own loop —
+# a Rust thread, or a Python/C/C++ station through an FFI layer above this
+# crate. Off by default so the two async templates do not build the sync
+# runtime bridge they never call.
+sync = ["dep:aimdb-sync", "dep:toml"]
+
 [dependencies]
 # `migratable` is not optional here: Temperature's `Linkable` impl (the
 # `to_bytes` the slot's outbound links publish through) is gated on both
@@ -37,6 +45,12 @@ thiserror = "2"
 rumqttc = { version = "0.25", default-features = false, features = [
     "use-native-tls",
 ] }
+
+# `sync` only: the runtime-thread bridge behind `StationHandle`, and the
+# profile parsing it does on behalf of callers that have a path rather than a
+# Rust struct.
+aimdb-sync = { path = "../../aimdb/aimdb-sync", optional = true }
+toml = { version = "0.8", optional = true }
 
 [dev-dependencies]
 toml = "0.8"
