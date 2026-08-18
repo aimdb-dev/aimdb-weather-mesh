@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "weather-contracts",
     "weather-hub",
+    "weather-station",
     "weather-station-knx",
     "weather-station-openmeteo",
 ]
@@ -11,13 +12,3 @@ members = [
 # Mirrors the aimdb workspace pin so the shared contracts crate builds no_std.
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 
-[patch.crates-io]
-# aimdb-knx-connector depends on the crates.io knx-pico, but needs the aimdb
-# fork (npdu_length=1 panic fix — a malformed telegram from the bus would
-# otherwise abort the station). The aimdb workspace applies this patch to
-# itself; a [patch] does not cross workspace boundaries, so it is repeated here
-# for weather-station-knx.
-#
-# The path is a submodule of the sibling aimdb checkout:
-#   git -C ../aimdb submodule update --init _external/knx-pico
-knx-pico = { path = "../aimdb/_external/knx-pico" }

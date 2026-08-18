@@ -30,12 +30,46 @@ over MQTT and one hub aggregates them into a queryable AimDB instance.
 | Crate | Role |
 |---|---|
 | [`weather-contracts`](weather-contracts) | The `Temperature`, `Humidity` and `DewPoint` schemas. Defines the wire format every station and the hub agree on. `no_std` compatible. |
+| [`weather-station`](weather-station) | Mesh-join behaviour every station shares: the profile format, the `slot-<n>` identity, the broker handshake, and the slot's records with their outbound links. |
 | [`weather-station-openmeteo`](weather-station-openmeteo) | Station template that needs no hardware: it fetches real observations from Open-Meteo for a location and publishes them into an assigned slot. |
 | [`weather-station-knx`](weather-station-knx) | Station template fed by a real KNX installation: temperature and humidity read off the bus through a KNXnet/IP gateway, throttled, and published into an assigned slot. |
 | [`weather-hub`](weather-hub) | Aggregating hub: a fixed pool of station slots, dew point derived per slot, exposed over AimX for the CLI and the dashboard. |
 
-Each station is self-contained: copy one out as the starting point for a station
-of your own, and it carries its own profile parsing and broker handling with it.
+Copy a station out as the starting point for one of your own. What you copy is
+the part that makes it your station — the poll loop, the bus decoding, the
+publish cadence. What it joins the mesh with comes from `weather-station`, so
+two stations cannot drift apart on the slot format, the profile version or the
+revocation policy.
+
+`weather-station` has three doors. `Station` is the default: join, supply one
+async task per quantity, run — the shape `weather-station-openmeteo` uses.
+`MeshSlot` hands the builder back unbuilt for stations whose readings arrive
+*through* the record graph off a connector AimDB already speaks, which is what
+`weather-station-knx` does with KNX. `StationHandle`, behind the `sync`
+feature, is for a caller that owns its own loop and calls
+`publish_temperature(21.5)` when it has a reading — a plain thread, or a
+Python, C or C++ station reaching Rust through an FFI layer:
+
+```bash
+cargo test -p weather-station --features sync
+# end-to-end against a broker:
+mosquitto -p 1883 & cargo test -p weather-station --features sync -- --ignored
+```
+
+The crate is `no_std` with `alloc`, and everything above is behind the default
+`tokio-runtime` feature. An MCU station turns it off and keeps what the mesh
+actually defines — the profile tables, the `slot-<n>` identity, the record keys
+and topics, and `configure_slot_records!` to put the records on its own builder
+— bringing its own Embassy adapter and MQTT connector:
+
+```bash
+cargo check -p weather-station --no-default-features --target thumbv7em-none-eabihf
+```
+
+The pre-flight broker probe is its own `preflight` feature (on by default with
+`tokio-runtime`). A host station wants it, so a revoked slot fails loudly at
+startup; an MCU is better off in the connector's reconnect loop than carrying a
+second MQTT client for one CONNECT.
 
 ## Data model
 
@@ -66,13 +100,6 @@ hub's deserializer and logged against the record key it arrived on. See the
   └── aimdb-weather-mesh/    # this repository
   ```
 
-- The `knx-pico` submodule of that checkout, which the workspace
-  `[patch.crates-io]` points at (`weather-station-knx` needs the aimdb fork; a
-  `[patch]` does not cross workspace boundaries, so it is repeated here):
-
-  ```bash
-  git -C ../aimdb submodule update --init _external/knx-pico
-  ```
 
 - An MQTT broker for the hub and stations to meet on — a local `mosquitto` for
   development, or the mesh broker named in a station profile.

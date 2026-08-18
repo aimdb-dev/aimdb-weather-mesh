@@ -55,15 +55,24 @@ name = "aimdb-knx-connector"
 version = "0.5.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-knx-pico",
  "async-stream",
  "futures-core",
  "futures-util",
  "heapless 0.8.0",
- "knx-pico",
  "thiserror",
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "aimdb-knx-pico"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7879d031796bd86006fa0861de981e13a560f2f9ceb0e987f96cfd29d25a496"
+dependencies = [
+ "heapless 0.9.3",
 ]
 
 [[package]]
@@ -78,6 +87,16 @@ dependencies = [
  "thiserror",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "aimdb-sync"
+version = "0.6.0"
+dependencies = [
+ "aimdb-core",
+ "aimdb-tokio-adapter",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -853,13 +872,6 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "knx-pico"
-version = "0.3.0"
-dependencies = [
- "heapless 0.9.3",
 ]
 
 [[package]]
@@ -1940,17 +1952,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "weather-station-knx"
+name = "weather-station"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
- "aimdb-knx-connector",
  "aimdb-mqtt-connector",
+ "aimdb-sync",
  "aimdb-tokio-adapter",
- "clap",
  "rumqttc",
  "serde",
+ "thiserror",
  "tokio",
  "toml",
  "tracing",
@@ -1959,22 +1971,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "weather-station-openmeteo"
+name = "weather-station-knx"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
- "aimdb-data-contracts",
- "aimdb-mqtt-connector",
+ "aimdb-knx-connector",
  "aimdb-tokio-adapter",
  "clap",
- "reqwest",
- "rumqttc",
  "serde",
  "tokio",
  "toml",
  "tracing",
- "tracing-subscriber",
  "weather-contracts",
+ "weather-station",
+]
+
+[[package]]
+name = "weather-station-openmeteo"
+version = "0.1.0"
+dependencies = [
+ "aimdb-core",
+ "clap",
+ "reqwest",
+ "serde",
+ "tokio",
+ "toml",
+ "tracing",
+ "weather-contracts",
+ "weather-station",
 ]
 
 [[package]]

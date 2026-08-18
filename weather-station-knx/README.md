@@ -56,16 +56,6 @@ the KNX side is read-only.
 ## Prerequisites
 
 - Rust stable, edition 2021.
-- A sibling `aimdb` checkout — see the [repository README](../README.md#prerequisites) —
-  with the `knx-pico` submodule initialised:
-
-  ```bash
-  git -C ../aimdb submodule update --init _external/knx-pico
-  ```
-
-  The workspace `[patch.crates-io]` points `knx-pico` at that submodule; the
-  fork carries an `npdu_length = 1` panic fix, without which a malformed
-  telegram from the bus aborts the station.
 - A KNXnet/IP gateway reachable by **IP address** — hostnames are not resolved.
 - A station profile (`station.toml`).
 
