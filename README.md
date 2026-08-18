@@ -100,13 +100,6 @@ hub's deserializer and logged against the record key it arrived on. See the
   └── aimdb-weather-mesh/    # this repository
   ```
 
-- The `knx-pico` submodule of that checkout, which the workspace
-  `[patch.crates-io]` points at (`weather-station-knx` needs the aimdb fork; a
-  `[patch]` does not cross workspace boundaries, so it is repeated here):
-
-  ```bash
-  git -C ../aimdb submodule update --init _external/knx-pico
-  ```
 
 - An MQTT broker for the hub and stations to meet on — a local `mosquitto` for
   development, or the mesh broker named in a station profile.
