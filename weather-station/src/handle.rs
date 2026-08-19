@@ -10,7 +10,7 @@ use aimdb_core::{AimDbBuilder, RecordKey};
 use aimdb_sync::{AimDbBuilderSyncExt, AimDbHandle, SyncProducer};
 use aimdb_tokio_adapter::TokioAdapter;
 use serde::Deserialize;
-use weather_contracts::{Humidity, Temperature};
+use weather_contracts::{HumidityV1, TemperatureV2};
 
 use crate::{check_profile_version, AppProfile, BrokerProfile, MeshSlot, StationError};
 
@@ -58,8 +58,8 @@ const GRAPH_START_TIMEOUT: Duration = Duration::from_secs(10);
 /// for everyone else.
 pub struct StationHandle {
     slot: MeshSlot,
-    temperature: SyncProducer<Temperature>,
-    humidity: SyncProducer<Humidity>,
+    temperature: SyncProducer<TemperatureV2>,
+    humidity: SyncProducer<HumidityV1>,
     /// Dropped last: the producers hold a weak reference to the database this
     /// handle owns, so it has to outlive them.
     db: AimDbHandle,
@@ -142,8 +142,8 @@ impl StationHandle {
             .recv_timeout(GRAPH_START_TIMEOUT)
             .map_err(|_| StationError::GraphStartTimeout(GRAPH_START_TIMEOUT))?;
 
-        let temperature = db.producer::<Temperature>(slot.temperature_key().as_str())?;
-        let humidity = db.producer::<Humidity>(slot.humidity_key().as_str())?;
+        let temperature = db.producer::<TemperatureV2>(slot.temperature_key().as_str())?;
+        let humidity = db.producer::<HumidityV1>(slot.humidity_key().as_str())?;
 
         slot.log_ready();
 
@@ -162,13 +162,13 @@ impl StationHandle {
     /// not have to be published together or share a timestamp.
     pub fn publish_temperature(&self, celsius: f32) -> Result<(), StationError> {
         self.temperature
-            .set(Temperature::new(celsius, unix_millis()?))?;
+            .set(TemperatureV2::new(celsius, unix_millis()?))?;
         Ok(())
     }
 
     /// Publish a humidity reading, blocking until the graph accepts it.
     pub fn publish_humidity(&self, percent: f32) -> Result<(), StationError> {
-        self.humidity.set(Humidity {
+        self.humidity.set(HumidityV1 {
             percent,
             timestamp: unix_millis()?,
         })?;
@@ -183,13 +183,13 @@ impl StationHandle {
     /// it. This is the alternative where that does not fit.
     pub fn try_publish_temperature(&self, celsius: f32) -> Result<(), StationError> {
         self.temperature
-            .try_set(Temperature::new(celsius, unix_millis()?))?;
+            .try_set(TemperatureV2::new(celsius, unix_millis()?))?;
         Ok(())
     }
 
     /// [`publish_humidity`](Self::publish_humidity) without blocking.
     pub fn try_publish_humidity(&self, percent: f32) -> Result<(), StationError> {
-        self.humidity.try_set(Humidity {
+        self.humidity.try_set(HumidityV1 {
             percent,
             timestamp: unix_millis()?,
         })?;

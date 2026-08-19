@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use aimdb_core::{AimDbBuilder, Producer, RuntimeContext};
 use aimdb_tokio_adapter::TokioAdapter;
-use weather_contracts::{Humidity, Temperature};
+use weather_contracts::{HumidityV1, TemperatureV2};
 
 use crate::{AppProfile, BrokerProfile, MeshSlot, StationError};
 
@@ -17,10 +17,10 @@ use crate::{AppProfile, BrokerProfile, MeshSlot, StationError};
 ///
 /// ```no_run
 /// # use aimdb_core::{Producer, RuntimeContext};
-/// # use weather_contracts::{Humidity, Temperature};
+/// # use weather_contracts::{HumidityV1, TemperatureV2};
 /// # use weather_station::{AppProfile, BrokerProfile, Station, StationError};
-/// # async fn temperature_source(ctx: RuntimeContext, producer: Producer<Temperature>) {}
-/// # async fn humidity_source(ctx: RuntimeContext, producer: Producer<Humidity>) {}
+/// # async fn temperature_source(ctx: RuntimeContext, producer: Producer<TemperatureV2>) {}
+/// # async fn humidity_source(ctx: RuntimeContext, producer: Producer<HumidityV1>) {}
 /// # async fn example(app: &AppProfile, broker: &BrokerProfile) -> Result<(), StationError> {
 /// Station::join("slot-17", app, broker)
 ///     .await?
@@ -59,11 +59,11 @@ impl Station {
     /// value it produces is serialized onto the slot's MQTT topic.
     pub fn temperature<F, Fut>(mut self, f: F) -> Self
     where
-        F: FnOnce(RuntimeContext, Producer<Temperature>) -> Fut + Send + 'static,
+        F: FnOnce(RuntimeContext, Producer<TemperatureV2>) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         let key = self.slot.temperature_key();
-        self.builder.configure::<Temperature>(key, |reg| {
+        self.builder.configure::<TemperatureV2>(key, |reg| {
             reg.source(f);
         });
         self
@@ -74,11 +74,11 @@ impl Station {
     /// leaves its slot without a dew point.
     pub fn humidity<F, Fut>(mut self, f: F) -> Self
     where
-        F: FnOnce(RuntimeContext, Producer<Humidity>) -> Fut + Send + 'static,
+        F: FnOnce(RuntimeContext, Producer<HumidityV1>) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         let key = self.slot.humidity_key();
-        self.builder.configure::<Humidity>(key, |reg| {
+        self.builder.configure::<HumidityV1>(key, |reg| {
             reg.source(f);
         });
         self

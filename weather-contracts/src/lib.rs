@@ -1,7 +1,15 @@
 //! # Weather Contracts
 //!
-//! The `Temperature`, `Humidity` and `DewPoint` schemas shared by the AimDB
-//! weather mesh, and the [`keys`] rule every participant addresses them by.
+//! The temperature, humidity and dew point schemas shared by the AimDB weather
+//! mesh, and the [`keys`] rule every participant addresses them by.
+//!
+//! **Every schema type carries its version in its name, from birth.** A type is
+//! never renamed and never repointed: [`TemperatureV1`] stays `TemperatureV1`
+//! once [`TemperatureV2`] supersedes it, and both remain published shapes that
+//! a deployed node may still speak. There is deliberately no unversioned alias
+//! for "the latest" — it would be a published name whose meaning changes under
+//! callers, which is the one thing a contract must never do. A node names the
+//! shape it speaks, and that is readable in its source forever.
 //! Records are addressed by `StringKey` at the hub and at the stations, so what
 //! this crate carries is how a key is *spelled* — never an enumeration of which
 //! keys exist, which is a property of a running deployment.
@@ -21,9 +29,9 @@ pub mod temperature;
 // browser client so none of them can spell it differently.
 pub mod keys;
 
-pub use dew_point::DewPoint;
-pub use humidity::Humidity;
-pub use temperature::{Temperature, TemperatureV1, TemperatureV2};
+pub use dew_point::DewPointV1;
+pub use humidity::HumidityV1;
+pub use temperature::{TemperatureV1, TemperatureV2};
 
 // Re-export traits from aimdb-data-contracts
 pub use aimdb_data_contracts::{SchemaType, Settable, Streamable};
