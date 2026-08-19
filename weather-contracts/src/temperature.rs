@@ -40,9 +40,6 @@ pub struct TemperatureV2 {
     pub timestamp: u64,
 }
 
-/// Type alias — always points to the latest schema version.
-pub type Temperature = TemperatureV2;
-
 fn default_v2_version() -> u32 {
     2
 }
@@ -66,14 +63,17 @@ impl SchemaType for TemperatureV2 {
 impl Streamable for TemperatureV2 {}
 
 // ═══════════════════════════════════════════════════════════════════
-// LEGACY v1 SCHEMA (for migration purposes)
+// v1 SCHEMA — still spoken on the wire
 // ═══════════════════════════════════════════════════════════════════
 
-/// Legacy Temperature schema (v1), the input of the migration from older nodes.
+/// Temperature reading in a caller-named unit (schema v1).
 ///
 /// v1 format: `{ "schema_version": 1, "temp": f32, "timestamp": u64, "unit": "C"|"F"|"K" }`
 ///
-/// Kept in the crate so the migration path stays covered by the test suite.
+/// Not deprecated and not test scaffolding: a node built against v1 keeps
+/// publishing v1 for as long as it is deployed, and the hub upgrades on ingest
+/// through [`TemperatureV1ToV2`]. Superseded by [`TemperatureV2`] as the shape
+/// new nodes are written against — never replaced by it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TemperatureV1 {
     /// Schema version marker (always 1 for v1)

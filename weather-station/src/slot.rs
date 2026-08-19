@@ -189,28 +189,28 @@ macro_rules! configure_slot_records {
         use $crate::__macro_deps::aimdb_core::buffer::BufferCfg;
         use $crate::__macro_deps::aimdb_core::connector::SerializeError;
         use $crate::__macro_deps::aimdb_data_contracts::Linkable;
-        use $crate::__macro_deps::weather_contracts::{Humidity, Temperature};
+        use $crate::__macro_deps::weather_contracts::{HumidityV1, TemperatureV2};
 
         let builder = $builder;
         let slot = $slot;
 
-        builder.configure::<Temperature>(slot.temperature_key(), |reg| {
+        builder.configure::<TemperatureV2>(slot.temperature_key(), |reg| {
             reg.buffer(BufferCfg::SpmcRing {
                 capacity: $crate::MESH_BUFFER_CAPACITY,
             });
             reg.link_to(slot.temperature_topic())
-                .with_serializer(|_ctx, t: &Temperature| {
+                .with_serializer(|_ctx, t: &TemperatureV2| {
                     t.to_bytes().map_err(|_| SerializeError::InvalidData)
                 })
                 .finish();
         });
 
-        builder.configure::<Humidity>(slot.humidity_key(), |reg| {
+        builder.configure::<HumidityV1>(slot.humidity_key(), |reg| {
             reg.buffer(BufferCfg::SpmcRing {
                 capacity: $crate::MESH_BUFFER_CAPACITY,
             });
             reg.link_to(slot.humidity_topic())
-                .with_serializer(|_ctx, h: &Humidity| {
+                .with_serializer(|_ctx, h: &HumidityV1| {
                     h.to_bytes().map_err(|_| SerializeError::InvalidData)
                 })
                 .finish();

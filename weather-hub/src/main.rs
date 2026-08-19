@@ -1,7 +1,7 @@
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder, RecordKey, StringKey};
 use aimdb_data_contracts::{Linkable, ObservableRegistrarExt};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
-use weather_contracts::{keys, DewPoint, Humidity, Temperature};
+use weather_contracts::{keys, DewPointV1, HumidityV1, TemperatureV2};
 
 #[tokio::main]
 async fn main() -> aimdb_core::DbResult<()> {
@@ -74,7 +74,7 @@ fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
     for slot in 0..slots {
         let temp_key = StringKey::intern(keys::temperature_key(slot));
         let temp_topic = keys::temperature_topic(slot);
-        builder.configure::<Temperature>(temp_key, |reg| {
+        builder.configure::<TemperatureV2>(temp_key, |reg| {
             // Single Producer, Multiple Consumers (SPMC) ring buffer: one
             // station publishes into it, the dashboard and `aimdb record get`
             // read from it.
@@ -88,7 +88,7 @@ fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
             let key_name = temp_key.as_str();
             reg.link_from(&temp_topic)
                 .with_deserializer(move |ctx, data: &[u8]| {
-                    Temperature::from_bytes(data).map_err(|e| {
+                    TemperatureV2::from_bytes(data).map_err(|e| {
                         // Report the rejection against the record key, so a
                         // station publishing a malformed payload is visible.
                         ctx.log()
@@ -101,14 +101,14 @@ fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
 
         let humidity_key = StringKey::intern(keys::humidity_key(slot));
         let humidity_topic = keys::humidity_topic(slot);
-        builder.configure::<Humidity>(humidity_key, |reg| {
+        builder.configure::<HumidityV1>(humidity_key, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
             reg.observe();
             reg.with_remote_access();
             let key_name = humidity_key.as_str();
             reg.link_from(&humidity_topic)
                 .with_deserializer(move |ctx, data: &[u8]| {
-                    Humidity::from_bytes(data).map_err(|e| {
+                    HumidityV1::from_bytes(data).map_err(|e| {
                         ctx.log()
                             .error(&format!("{key_name}: rejected payload: {e}"));
                         e
@@ -120,27 +120,27 @@ fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
         // Derived at the hub so the dashboard stays supplied even when a
         // station publishes only temperature/humidity.
         let dew_point_key = StringKey::intern(keys::dew_point_key(slot));
-        builder.configure::<DewPoint>(dew_point_key, |reg| {
+        builder.configure::<DewPointV1>(dew_point_key, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
             reg.observe();
             reg.with_remote_access();
             reg.transform_join(|b| {
-                b.input::<Temperature>(temp_key)
-                    .input::<Humidity>(humidity_key)
+                b.input::<TemperatureV2>(temp_key)
+                    .input::<HumidityV1>(humidity_key)
                     .on_triggers(|mut rx, producer| async move {
-                        let mut last_temp: Option<Temperature> = None;
-                        let mut last_hum: Option<Humidity> = None;
+                        let mut last_temp: Option<TemperatureV2> = None;
+                        let mut last_hum: Option<HumidityV1> = None;
                         while let Ok(trigger) = rx.recv().await {
                             match trigger.index() {
-                                0 => last_temp = trigger.as_input::<Temperature>().cloned(),
-                                1 => last_hum = trigger.as_input::<Humidity>().cloned(),
+                                0 => last_temp = trigger.as_input::<TemperatureV2>().cloned(),
+                                1 => last_hum = trigger.as_input::<HumidityV1>().cloned(),
                                 _ => {}
                             }
                             if let (Some(t), Some(h)) = (&last_temp, &last_hum) {
                                 // Magnus approximation: T_dp ≈ T - (100 - RH) / 5
                                 let dew_point = t.celsius - (100.0 - h.percent) / 5.0;
                                 let timestamp = t.timestamp.max(h.timestamp);
-                                producer.produce(DewPoint {
+                                producer.produce(DewPointV1 {
                                     celsius: dew_point,
                                     timestamp,
                                 });

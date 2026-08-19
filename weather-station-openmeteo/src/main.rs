@@ -8,9 +8,9 @@
 //! cargo run -p weather-station-openmeteo -- --config station.toml
 //! ```
 //!
-//! Publishes `Temperature` and `Humidity` into its assigned slot
+//! Publishes `TemperatureV2` and `HumidityV1` into its assigned slot
 //! (`station/{slot}/…`), each fed by a source so the poll loops run as part of
-//! the record graph. `DewPoint` is not published here: the hub derives it per
+//! the record graph. `DewPointV1` is not published here: the hub derives it per
 //! slot from those two records.
 //!
 //! Everything the mesh defines — the profile format, the slot identity, the
@@ -26,7 +26,7 @@ use open_meteo::OpenMeteoClient;
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
-use weather_contracts::{Humidity, Temperature};
+use weather_contracts::{HumidityV1, TemperatureV2};
 use weather_station::{check_profile_version, AppProfile, BrokerProfile, Station};
 
 /// Open-Meteo refreshes roughly every 15 minutes; polling every 5 keeps the
@@ -121,13 +121,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// above unchanged — this is the whole of what a station template supplies.
 async fn temperature_source(
     ctx: RuntimeContext,
-    producer: Producer<Temperature>,
+    producer: Producer<TemperatureV2>,
     client: Arc<OpenMeteoClient>,
 ) {
     loop {
         match client.current(&ctx).await {
             Ok(obs) => {
-                producer.produce(Temperature::new(obs.temperature as f32, obs.timestamp));
+                producer.produce(TemperatureV2::new(obs.temperature as f32, obs.timestamp));
                 ctx.log()
                     .info(&format!("🌡️  Published {:.1}°C", obs.temperature));
             }
@@ -142,13 +142,13 @@ async fn temperature_source(
 /// source used (see [`OpenMeteoClient::current`]).
 async fn humidity_source(
     ctx: RuntimeContext,
-    producer: Producer<Humidity>,
+    producer: Producer<HumidityV1>,
     client: Arc<OpenMeteoClient>,
 ) {
     loop {
         match client.current(&ctx).await {
             Ok(obs) => {
-                producer.produce(Humidity {
+                producer.produce(HumidityV1 {
                     percent: obs.humidity as f32,
                     timestamp: obs.timestamp,
                 });

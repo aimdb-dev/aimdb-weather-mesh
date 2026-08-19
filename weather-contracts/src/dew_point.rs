@@ -1,6 +1,6 @@
 //! Dew point derived measurement
 //!
-//! Computed from `Temperature` and `Humidity` via the Magnus approximation:
+//! Computed from `TemperatureV2` and `HumidityV1` via the Magnus approximation:
 //! `T_dp ≈ T_celsius - (100 - RH_percent) / 5`
 //!
 //! Accurate to ±1°C for RH > 50%. Requires only basic f32 arithmetic — no libm.
@@ -13,25 +13,26 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "linkable")]
 use aimdb_data_contracts::Linkable;
 
-/// Dew point temperature derived from `Temperature` and `Humidity`.
+/// Dew point temperature derived from `TemperatureV2` and `HumidityV1`.
 ///
 /// Not sensed directly — produced by a `transform_join` over
-/// [`super::Temperature`] and [`super::Humidity`] records.
+/// [`super::TemperatureV2`] and [`super::HumidityV1`] records.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DewPoint {
+pub struct DewPointV1 {
     /// Dew point in degrees Celsius
     pub celsius: f32,
     /// Unix timestamp (ms) of the most recent contributing sensor reading
     pub timestamp: u64,
 }
 
-impl SchemaType for DewPoint {
+impl SchemaType for DewPointV1 {
     const NAME: &'static str = "dew_point";
+    const VERSION: u32 = 1;
 }
 
-impl Streamable for DewPoint {}
+impl Streamable for DewPointV1 {}
 
-impl Observable for DewPoint {
+impl Observable for DewPointV1 {
     type Signal = f32;
     const UNIT: &'static str = "°C";
 
@@ -41,7 +42,7 @@ impl Observable for DewPoint {
 }
 
 #[cfg(feature = "linkable")]
-impl Linkable for DewPoint {
+impl Linkable for DewPointV1 {
     fn from_bytes(data: &[u8]) -> Result<Self, alloc::string::String> {
         serde_json::from_slice(data).map_err(|e| alloc::string::ToString::to_string(&e))
     }

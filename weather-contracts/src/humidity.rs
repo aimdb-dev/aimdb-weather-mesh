@@ -15,20 +15,21 @@ use rand::RngExt;
 
 /// Humidity sensor reading
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Humidity {
+pub struct HumidityV1 {
     /// Relative humidity as a percentage (0-100)
     pub percent: f32,
     /// Unix timestamp (milliseconds) when reading was taken
     pub timestamp: u64,
 }
 
-impl SchemaType for Humidity {
+impl SchemaType for HumidityV1 {
     const NAME: &'static str = "humidity";
+    const VERSION: u32 = 1;
 }
 
-impl Streamable for Humidity {}
+impl Streamable for HumidityV1 {}
 
-impl Observable for Humidity {
+impl Observable for HumidityV1 {
     type Signal = f32;
     const UNIT: &'static str = "%";
 
@@ -38,7 +39,7 @@ impl Observable for Humidity {
 }
 
 #[cfg(feature = "simulatable")]
-impl Simulatable for Humidity {
+impl Simulatable for HumidityV1 {
     type Params = RandomWalkParams;
 
     /// Simulate humidity readings with random walk behavior.
@@ -70,18 +71,18 @@ impl Simulatable for Humidity {
             None => base + (rng.random::<f32>() - 0.5) * variation,
         };
 
-        Humidity {
+        HumidityV1 {
             percent: current,
             timestamp: timestamp_ms,
         }
     }
 }
 
-impl Settable for Humidity {
+impl Settable for HumidityV1 {
     type Value = f32;
 
     fn set(value: Self::Value, timestamp: u64) -> Self {
-        Humidity {
+        HumidityV1 {
             percent: value,
             timestamp,
         }
@@ -89,7 +90,7 @@ impl Settable for Humidity {
 }
 
 #[cfg(feature = "linkable")]
-impl Linkable for Humidity {
+impl Linkable for HumidityV1 {
     fn from_bytes(data: &[u8]) -> Result<Self, alloc::string::String> {
         serde_json::from_slice(data).map_err(|e| alloc::string::ToString::to_string(&e))
     }

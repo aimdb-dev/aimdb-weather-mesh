@@ -20,7 +20,7 @@
 //!   knx.humidity    ──throttle──▶ station.<n>.humidity    ──▶ mqtt://station/<n>/humidity
 //! ```
 //!
-//! `DewPoint` is not published here: the hub derives it per slot from those
+//! `DewPointV1` is not published here: the hub derives it per slot from those
 //! two records.
 //!
 //! The mesh records on the right of that diagram, and the handshake that earns
@@ -40,7 +40,7 @@ use knx::{KnxConfig, KnxProfile};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
-use weather_contracts::{Humidity, Temperature};
+use weather_contracts::{HumidityV1, TemperatureV2};
 use weather_station::{check_profile_version, AppProfile, BrokerProfile, MeshSlot};
 
 /// Station-local records carrying the bus reading verbatim. They never leave
@@ -137,7 +137,7 @@ fn register_temperature(builder: &mut AimDbBuilder, knx: &KnxConfig, mesh_key: S
     let dpt = knx.temperature.dpt;
     let link = format!("knx://{ga}");
 
-    builder.configure::<Temperature>(RAW_TEMPERATURE_KEY, |reg| {
+    builder.configure::<TemperatureV2>(RAW_TEMPERATURE_KEY, |reg| {
         // SingleLatest: a sensor has one current value. The throttle is
         // leading-edge — it drops readings inside the window rather than
         // deferring them, so a burst followed by silence leaves the mesh on
@@ -147,18 +147,19 @@ fn register_temperature(builder: &mut AimDbBuilder, knx: &KnxConfig, mesh_key: S
             .with_deserializer(move |ctx, data: &[u8]| {
                 let celsius = dpt.decode(data).map_err(|e| reject(&ctx, &ga, data, e))?;
                 ctx.log().info(&format!("🌡️  KNX {ga} → {celsius:.1}°C"));
-                Ok(Temperature::new(celsius, unix_millis(&ctx)))
+                Ok(TemperatureV2::new(celsius, unix_millis(&ctx)))
             })
             .finish();
     });
 
     let min_publish_ms = knx.min_publish_ms;
-    builder.configure::<Temperature>(mesh_key, |reg| {
-        reg.transform::<Temperature, _>(RAW_TEMPERATURE_KEY, move |b| {
-            b.with_state(Throttle::default())
-                .on_value(move |v: &Temperature, st: &mut Throttle| {
+    builder.configure::<TemperatureV2>(mesh_key, |reg| {
+        reg.transform::<TemperatureV2, _>(RAW_TEMPERATURE_KEY, move |b| {
+            b.with_state(Throttle::default()).on_value(
+                move |v: &TemperatureV2, st: &mut Throttle| {
                     admit(st, v.timestamp, min_publish_ms, "temperature").then(|| v.clone())
-                })
+                },
+            )
         });
     });
 }
@@ -169,13 +170,13 @@ fn register_humidity(builder: &mut AimDbBuilder, knx: &KnxConfig, mesh_key: Stri
     let dpt = knx.humidity.dpt;
     let link = format!("knx://{ga}");
 
-    builder.configure::<Humidity>(RAW_HUMIDITY_KEY, |reg| {
+    builder.configure::<HumidityV1>(RAW_HUMIDITY_KEY, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from(&link)
             .with_deserializer(move |ctx, data: &[u8]| {
                 let percent = dpt.decode(data).map_err(|e| reject(&ctx, &ga, data, e))?;
                 ctx.log().info(&format!("💧 KNX {ga} → {percent:.1}%"));
-                Ok(Humidity {
+                Ok(HumidityV1 {
                     percent,
                     timestamp: unix_millis(&ctx),
                 })
@@ -184,10 +185,10 @@ fn register_humidity(builder: &mut AimDbBuilder, knx: &KnxConfig, mesh_key: Stri
     });
 
     let min_publish_ms = knx.min_publish_ms;
-    builder.configure::<Humidity>(mesh_key, |reg| {
-        reg.transform::<Humidity, _>(RAW_HUMIDITY_KEY, move |b| {
+    builder.configure::<HumidityV1>(mesh_key, |reg| {
+        reg.transform::<HumidityV1, _>(RAW_HUMIDITY_KEY, move |b| {
             b.with_state(Throttle::default())
-                .on_value(move |v: &Humidity, st: &mut Throttle| {
+                .on_value(move |v: &HumidityV1, st: &mut Throttle| {
                     admit(st, v.timestamp, min_publish_ms, "humidity").then(|| v.clone())
                 })
         });
