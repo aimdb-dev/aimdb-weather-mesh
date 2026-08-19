@@ -5,6 +5,7 @@ use alloc::format;
 use alloc::string::String;
 
 use aimdb_core::StringKey;
+use weather_contracts::keys;
 
 use crate::broker::redact_url;
 use crate::{slot_from_station_id, AppProfile, BrokerProfile, StationError};
@@ -80,10 +81,10 @@ impl MeshSlot {
                 username: broker.username.clone(),
                 password: broker.password.clone(),
             },
-            temperature_key: StringKey::intern(format!("station.{slot}.temperature")),
-            humidity_key: StringKey::intern(format!("station.{slot}.humidity")),
-            temperature_topic: format!("mqtt://station/{slot}/temperature"),
-            humidity_topic: format!("mqtt://station/{slot}/humidity"),
+            temperature_key: StringKey::intern(keys::temperature_key(slot)),
+            humidity_key: StringKey::intern(keys::humidity_key(slot)),
+            temperature_topic: keys::temperature_topic(slot),
+            humidity_topic: keys::humidity_topic(slot),
         })
     }
 
@@ -283,10 +284,10 @@ mod tests {
                 username: "u".to_string(),
                 password: "p".to_string(),
             },
-            temperature_key: StringKey::intern(format!("station.{slot}.temperature")),
-            humidity_key: StringKey::intern(format!("station.{slot}.humidity")),
-            temperature_topic: format!("mqtt://station/{slot}/temperature"),
-            humidity_topic: format!("mqtt://station/{slot}/humidity"),
+            temperature_key: StringKey::intern(keys::temperature_key(slot)),
+            humidity_key: StringKey::intern(keys::humidity_key(slot)),
+            temperature_topic: keys::temperature_topic(slot),
+            humidity_topic: keys::humidity_topic(slot),
         }
     }
 

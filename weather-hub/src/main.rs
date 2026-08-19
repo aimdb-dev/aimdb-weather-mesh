@@ -1,7 +1,7 @@
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder, RecordKey, StringKey};
 use aimdb_data_contracts::{Linkable, ObservableRegistrarExt};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
-use weather_contracts::{DewPoint, Humidity, Temperature};
+use weather_contracts::{keys, DewPoint, Humidity, Temperature};
 
 #[tokio::main]
 async fn main() -> aimdb_core::DbResult<()> {
@@ -72,8 +72,8 @@ async fn main() -> aimdb_core::DbResult<()> {
 /// on `record list` / `record get`.
 fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
     for slot in 0..slots {
-        let temp_key = StringKey::intern(format!("station.{slot}.temperature"));
-        let temp_topic = format!("mqtt://station/{slot}/temperature");
+        let temp_key = StringKey::intern(keys::temperature_key(slot));
+        let temp_topic = keys::temperature_topic(slot);
         builder.configure::<Temperature>(temp_key, |reg| {
             // Single Producer, Multiple Consumers (SPMC) ring buffer: one
             // station publishes into it, the dashboard and `aimdb record get`
@@ -99,8 +99,8 @@ fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
                 .finish();
         });
 
-        let humidity_key = StringKey::intern(format!("station.{slot}.humidity"));
-        let humidity_topic = format!("mqtt://station/{slot}/humidity");
+        let humidity_key = StringKey::intern(keys::humidity_key(slot));
+        let humidity_topic = keys::humidity_topic(slot);
         builder.configure::<Humidity>(humidity_key, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
             reg.observe();
@@ -119,7 +119,7 @@ fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
 
         // Derived at the hub so the dashboard stays supplied even when a
         // station publishes only temperature/humidity.
-        let dew_point_key = StringKey::intern(format!("station.{slot}.dew_point"));
+        let dew_point_key = StringKey::intern(keys::dew_point_key(slot));
         builder.configure::<DewPoint>(dew_point_key, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
             reg.observe();
