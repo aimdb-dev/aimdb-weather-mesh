@@ -64,8 +64,11 @@ async fn main() -> aimdb_core::DbResult<()> {
 ///
 /// Every slot's records exist from startup, so admitting a station is only a
 /// matter of handing out an unused slot number; no hub restart is involved. The
-/// schema check happens per payload instead: `from_bytes` rejects anything that
-/// doesn't match the contract, and the rejection is logged at the hub.
+/// schema check happens per payload instead, and the rejection is logged at the
+/// hub. For temperature that check is an *upgrade*: `Linkable::from_bytes` runs
+/// the migration chain, so a node built against v1 keeps joining a mesh that has
+/// moved to v2. What it does not accept is a payload with no version field at
+/// all — the chain needs one to dispatch on.
 ///
 /// Values are not logged per message: across dozens of slots that output
 /// drowns out everything else. `.observe()` keeps the signal gauges available

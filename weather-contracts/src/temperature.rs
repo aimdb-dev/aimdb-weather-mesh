@@ -2,11 +2,11 @@
 //!
 //! # Schema Evolution
 //!
-//! `Temperature` is a **version-aware payload**, so stations and hubs can be
+//! Temperature is a **version-aware payload**, so stations and hubs can be
 //! updated independently:
 //!
-//! - **v1** (legacy): `{ "schema_version": 1, "temp": f32, "timestamp": u64, "unit": "C"|"F"|"K" }`
-//! - **v2** (current): `{ "schema_version": 2, "celsius": f32, "timestamp": u64 }`
+//! - **v1**: `{ "schema_version": 1, "temp": f32, "timestamp": u64, "unit": "C"|"F"|"K" }`
+//! - **v2** (what new nodes are written against): `{ "schema_version": 2, "celsius": f32, "timestamp": u64 }`
 //!
 //! The `MigrationChain` impl (via `migration_chain!`) reads `schema_version`
 //! from the payload and migrates an older one to the current schema before the
@@ -239,5 +239,47 @@ impl Linkable for TemperatureV2 {
 
     fn to_bytes(&self) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
         serde_json::to_vec(self).map_err(|e| alloc::string::ToString::to_string(&e))
+    }
+}
+
+#[cfg(test)]
+#[cfg(all(feature = "linkable", feature = "migratable"))]
+mod tests {
+    use super::*;
+    use aimdb_data_contracts::Linkable;
+
+    /// Both live schema versions decode through the same entry point, so a hub
+    /// configured for [`TemperatureV2`] admits a v1 node without knowing it is
+    /// one. This is the mesh's compatibility guarantee; it was previously
+    /// untested, which meant a change to the `Linkable` impl could have removed
+    /// it silently.
+    #[test]
+    fn v1_and_v2_payloads_both_decode_as_v2() {
+        let v2 = br#"{"schema_version":2,"celsius":21.5,"timestamp":100}"#;
+        assert_eq!(TemperatureV2::from_bytes(v2).unwrap().celsius, 21.5);
+
+        let v1 = br#"{"schema_version":1,"temp":21.5,"timestamp":100,"unit":"C"}"#;
+        assert_eq!(TemperatureV2::from_bytes(v1).unwrap().celsius, 21.5);
+    }
+
+    /// v1 carried the unit alongside the value; v2 is Celsius by definition, so
+    /// the step converts rather than reinterpreting.
+    #[test]
+    fn the_v1_unit_is_converted_not_dropped() {
+        let fahrenheit = br#"{"schema_version":1,"temp":70.7,"timestamp":100,"unit":"F"}"#;
+        let t = TemperatureV2::from_bytes(fahrenheit).unwrap();
+        assert!((t.celsius - 21.5).abs() < 0.1, "got {}", t.celsius);
+        assert_eq!(t.schema_version, 2);
+
+        let kelvin = br#"{"schema_version":1,"temp":294.65,"timestamp":100,"unit":"K"}"#;
+        assert!((TemperatureV2::from_bytes(kelvin).unwrap().celsius - 21.5).abs() < 0.1);
+    }
+
+    /// The chain dispatches on the version field, so a payload without one is
+    /// rejected — note this holds despite `schema_version` carrying a serde
+    /// default, which applies only once a version has already been matched.
+    #[test]
+    fn a_payload_without_a_version_field_is_rejected() {
+        assert!(TemperatureV2::from_bytes(br#"{"celsius":21.5,"timestamp":100}"#).is_err());
     }
 }
