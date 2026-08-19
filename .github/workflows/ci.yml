@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+# This workspace reaches the aimdb crates by path (`../../aimdb/...`), so every
+# job checks out both repositories side by side:
+#
+#   $GITHUB_WORKSPACE/aimdb-weather-mesh   <- this repo
+#   $GITHUB_WORKSPACE/aimdb                <- the sibling the path deps resolve to
+#
+# The aimdb checkout deliberately does NOT use `submodules: recursive`. Its only
+# submodule is `_external/embassy`, which backs a `[patch.crates-io]` block in
+# the aimdb workspace root — a patch that does not apply to this workspace — and
+# an optional dependency this mesh never enables. Verified: with the submodule
+# absent, a from-scratch resolve of this workspace succeeds and `embassy-sync`
+# never enters the lock. Adding it back would only cost checkout time.
+
+jobs:
+  format-and-lint:
+    name: Format and Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: aimdb-weather-mesh
+
+      - uses: actions/checkout@v7
+        with:
+          repository: aimdb-dev/aimdb
+          path: aimdb
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            aimdb-weather-mesh/target
+          key: ${{ runner.os }}-mesh-lint-${{ hashFiles('aimdb-weather-mesh/Cargo.lock') }}
+
+      - name: Check formatting
+        working-directory: aimdb-weather-mesh
+        run: make fmt-check
+
+      - name: Run clippy on all valid feature combinations
+        working-directory: aimdb-weather-mesh
+        run: make clippy
+
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: aimdb-weather-mesh
+
+      - uses: actions/checkout@v7
+        with:
+          repository: aimdb-dev/aimdb
+          path: aimdb
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            aimdb-weather-mesh/target
+          key: ${{ runner.os }}-mesh-build-${{ hashFiles('aimdb-weather-mesh/Cargo.lock') }}
+
+      - name: Build workspace
+        working-directory: aimdb-weather-mesh
+        run: make build
+
+      - name: Test all valid feature combinations
+        working-directory: aimdb-weather-mesh
+        run: make test
+
+  embedded-target:
+    name: no_std Cross-compilation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: aimdb-weather-mesh
+
+      - uses: actions/checkout@v7
+        with:
+          repository: aimdb-dev/aimdb
+          path: aimdb
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+
+      - name: Cache dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            aimdb-weather-mesh/target
+          key: ${{ runner.os }}-mesh-embedded-${{ hashFiles('aimdb-weather-mesh/Cargo.lock') }}
+
+      - name: Cross-compile the no_std crates
+        working-directory: aimdb-weather-mesh
+        run: make test-embedded
+
+  lockfile:
+    name: Lockfile Drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: aimdb-weather-mesh
+
+      - uses: actions/checkout@v7
+        with:
+          repository: aimdb-dev/aimdb
+          path: aimdb
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Cargo.lock is current for the sibling checkout
+        working-directory: aimdb-weather-mesh
+        run: make lockfile

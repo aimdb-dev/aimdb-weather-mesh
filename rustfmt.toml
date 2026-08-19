@@ -1,0 +1,9 @@
+# Weather mesh rustfmt configuration
+#
+# Present so formatting is decided by this repository rather than by whatever
+# happens to sit beside it on disk. rustfmt resolves its config by walking up
+# from the source file, so without this file the effective settings depend on
+# the developer's checkout layout — and CI, which has no sibling submodules,
+# would then disagree with a local run.
+
+edition = "2021"
