@@ -17,11 +17,13 @@ use aimdb_data_contracts::Linkable;
 ///
 /// Not sensed directly — produced by a `transform_join` over
 /// [`super::TemperatureV2`] and [`super::HumidityV1`] records.
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DewPointV1 {
     /// Dew point in degrees Celsius
     pub celsius: f32,
     /// Unix timestamp (ms) of the most recent contributing sensor reading
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub timestamp: u64,
 }
 
