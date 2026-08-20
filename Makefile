@@ -5,7 +5,8 @@
 # the same commands. Adding a feature to a crate means adding its combination
 # here — that is the only place the matrix lives.
 
-.PHONY: help build test fmt fmt-check clippy test-embedded lockfile check clean clean-embedded
+.PHONY: help build test fmt fmt-check clippy test-embedded lockfile check clean clean-embedded \
+	ts-bindings ts-bindings-check wasm-check wasm js
 .DEFAULT_GOAL := help
 
 # Separate target dir for the cross-compile checks, so an interrupted embedded
@@ -13,11 +14,23 @@
 EMBEDDED_CHECK_TARGET_DIR := target/embedded-check
 EMBEDDED_TARGET := thumbv7em-none-eabihf
 
+# The browser client. Its Rust half only compiles for wasm32 (the wasm adapter
+# holds `web_sys` closures across await points, so its futures are `!Send`), and
+# its published artifact is an npm package rather than a crate.
+WASM_TARGET := wasm32-unknown-unknown
+WASM_CHECK_TARGET_DIR := target/wasm-check
+JS_DIR := weather-mesh-client/js
+# ts-rs writes one file per type here. Chosen by the caller rather than baked
+# into a `#[ts(export_to = ...)]` attribute, so no contract source hardcodes a
+# path into a sibling crate.
+TS_BINDINGS_DIR := $(JS_DIR)/src/generated
+TS_BINDINGS_FEATURES := ts,linkable,migratable
+
 # Every workspace member. `cargo fmt --all` is deliberately not used: it walks
 # into path dependencies outside this repository (the sibling aimdb checkout
 # and its embassy submodule), which both formats code we do not own and makes
 # the result depend on whether that submodule is present.
-PACKAGES := weather-contracts weather-station weather-station-openmeteo weather-station-knx weather-hub
+PACKAGES := weather-contracts weather-station weather-station-openmeteo weather-station-knx weather-hub weather-mesh-client
 
 # Many cargo invocations in sequence with different feature sets can hit
 # "Stale file handle" linker errors on Docker overlay filesystems.
@@ -42,8 +55,14 @@ help:
 	@printf "\n"
 	@printf "  $(YELLOW)Release-readiness Commands:$(NC)\n"
 	@printf "    test-embedded  Cross-compile the no_std crates for $(EMBEDDED_TARGET)\n"
+	@printf "    wasm-check     Compile the browser client for $(WASM_TARGET)\n"
+	@printf "    ts-bindings    Regenerate the TypeScript contract types (ts-rs)\n"
+	@printf "    js             Typecheck and test the browser client facade\n"
 	@printf "    lockfile       Fail if Cargo.lock is stale for the current sibling checkout\n"
 	@printf "    check          Everything above — run before pushing\n"
+	@printf "\n"
+	@printf "  $(YELLOW)Browser client:$(NC)\n"
+	@printf "    wasm           Build the npm package with wasm-pack (needs wasm-pack)\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Housekeeping:$(NC)\n"
 	@printf "    clean          Remove build artifacts\n"
@@ -73,6 +92,8 @@ test:
 	cargo test -p weather-station-knx
 	@printf "$(YELLOW)  → Testing weather-hub$(NC)\n"
 	cargo test -p weather-hub
+	@printf "$(YELLOW)  → Testing weather-mesh-client (the exported key rule)$(NC)\n"
+	cargo test -p weather-mesh-client
 	@printf "$(GREEN)✓ All tests passed!$(NC)\n"
 
 ## Format code
@@ -121,6 +142,10 @@ clippy:
 	cargo clippy -p weather-station-knx --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on weather-hub$(NC)\n"
 	cargo clippy -p weather-hub --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on weather-mesh-client (host: the key rule)$(NC)\n"
+	cargo clippy -p weather-mesh-client --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on weather-mesh-client ($(WASM_TARGET): the fusion)$(NC)\n"
+	cargo clippy -p weather-mesh-client --target $(WASM_TARGET) --target-dir $(WASM_CHECK_TARGET_DIR) -- -D warnings
 	@printf "$(GREEN)✓ Clippy clean!$(NC)\n"
 
 ## Cross-compile the no_std crates for the embedded target
@@ -154,14 +179,88 @@ lockfile:
 	fi
 	@printf "$(GREEN)✓ Cargo.lock is current!$(NC)\n"
 
+## Compile the browser client for the wasm target
+#
+# The half of `weather-mesh-client` that cannot be built on the host: the
+# `createWeatherDb` fusion and everything it drags in from the wasm adapter.
+# A separate target dir, for the same reason the embedded check has one.
+wasm-check:
+	@printf "$(BLUE)Checking $(WASM_TARGET) build of the browser client...$(NC)\n"
+	cargo check -p weather-mesh-client --target $(WASM_TARGET) --target-dir $(WASM_CHECK_TARGET_DIR)
+	@printf "$(GREEN)✓ Browser client compiles for $(WASM_TARGET)!$(NC)\n"
+
+## Regenerate the TypeScript contract types from the Rust definitions
+#
+# ts-rs emits at test time. The types are committed so a JS-only contributor can
+# typecheck without a Rust toolchain; `ts-bindings-check` is what stops them
+# drifting from the contracts they were generated out of.
+ts-bindings:
+	@printf "$(GREEN)Generating TypeScript contract types...$(NC)\n"
+	@mkdir -p $(TS_BINDINGS_DIR)
+	TS_RS_EXPORT_DIR=$(CURDIR)/$(TS_BINDINGS_DIR) \
+		cargo test -p weather-contracts --features "$(TS_BINDINGS_FEATURES)" export_bindings
+	@printf "$(GREEN)✓ Wrote $(TS_BINDINGS_DIR)$(NC)\n"
+
+## Fail if the committed TypeScript types no longer match the Rust contracts
+#
+# The npm package's whole claim is that its types cannot drift from the wire,
+# and that claim is only true if something checks. This is the mesh's version of
+# aimdb's `codegen-drift`.
+ts-bindings-check:
+	@printf "$(GREEN)Checking TypeScript contract types are current...$(NC)\n"
+	@rm -rf target/ts-bindings-check && mkdir -p target/ts-bindings-check
+	@TS_RS_EXPORT_DIR=$(CURDIR)/target/ts-bindings-check \
+		cargo test -q -p weather-contracts --features "$(TS_BINDINGS_FEATURES)" export_bindings >/dev/null
+	@if ! diff -ru $(TS_BINDINGS_DIR) target/ts-bindings-check; then \
+		printf "$(RED)✗ Committed TypeScript types are stale.$(NC)\n"; \
+		printf "$(YELLOW)  Run 'make ts-bindings' and commit the result.$(NC)\n"; \
+		exit 1; \
+	fi
+	@printf "$(GREEN)✓ TypeScript contract types are current!$(NC)\n"
+
+## Typecheck and test the browser client facade
+#
+# The facade is TypeScript because that is where the adapter's `unknown`
+# payloads become contract types — one cast, one place. Its tests run without a
+# browser or a wasm build: they drive the facade against a fake module.
+js:
+	@printf "$(GREEN)Checking the browser client facade...$(NC)\n"
+	cd $(JS_DIR) && npm ci
+	cd $(JS_DIR) && npm run typecheck
+	cd $(JS_DIR) && npm test
+	@printf "$(GREEN)✓ Browser client facade clean!$(NC)\n"
+
+## Build the npm package with wasm-pack
+#
+# Not part of `check`: it needs a wasm-pack install, and nothing downstream of
+# it is verified here anyway. `--scope aimdb` sets the package name at build
+# time rather than rewriting package.json afterwards; the wasm-pack output is an
+# internal artifact that the TypeScript facade wraps, so the published
+# package.json is $(JS_DIR)/package.json, not the generated one.
+wasm:
+	@command -v wasm-pack >/dev/null || { \
+		printf "$(RED)✗ wasm-pack not found.$(NC)\n"; \
+		printf "$(YELLOW)  Install it: cargo install wasm-pack$(NC)\n"; \
+		exit 1; \
+	}
+	@printf "$(GREEN)Building the browser client...$(NC)\n"
+	wasm-pack build weather-mesh-client --target web --scope aimdb --out-dir js/pkg
+	cd $(JS_DIR) && npm ci && npm run build
+	@printf "$(GREEN)✓ npm package built in $(JS_DIR)$(NC)\n"
+
 ## Everything — run before pushing
-check: fmt-check clippy test test-embedded lockfile
+check: fmt-check clippy test test-embedded wasm-check ts-bindings-check js lockfile
 	@printf "$(GREEN)✓ All checks passed!$(NC)\n"
 
 ## Remove build artifacts
 clean:
 	@printf "$(GREEN)Cleaning build artifacts...$(NC)\n"
 	cargo clean
+
+## Remove only the browser client build artifacts
+clean-wasm:
+	@printf "$(GREEN)Cleaning browser client artifacts...$(NC)\n"
+	rm -rf $(WASM_CHECK_TARGET_DIR) $(JS_DIR)/pkg $(JS_DIR)/dist $(JS_DIR)/node_modules
 
 ## Remove only the embedded check artifacts
 clean-embedded:

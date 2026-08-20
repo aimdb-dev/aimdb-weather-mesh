@@ -6,7 +6,9 @@ members = [
     "weather-station",
     "weather-station-knx",
     "weather-station-openmeteo",
+    "weather-mesh-client",
 ]
+
 
 [workspace.dependencies]
 # Mirrors the aimdb workspace pin so the shared contracts crate builds no_std.

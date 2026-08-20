@@ -1,0 +1,44 @@
+[package]
+name = "weather-mesh-client"
+version = "0.1.0"
+edition = "2021"
+description = "Browser client for the AimDB weather mesh: the wasm adapter fused with the mesh's contracts and naming rule"
+license = "MIT OR Apache-2.0"
+# Never published to crates.io. This crate's artifact is the npm package
+# `@aimdb/weather-mesh-client`, built from it by wasm-pack — there is no Rust
+# consumer, and publishing the source would claim a crates.io name for
+# something nobody can `use`.
+publish = false
+
+[lib]
+# `cdylib` is what wasm-pack links; `rlib` keeps `cargo test` able to see the
+# crate on the host, which is where the key-rule tests run.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The contract half. `default-features = false` keeps `std` off: nothing here
+# needs it, and it matches the feature set the hub's wire types are built with.
+weather-contracts = { path = "../weather-contracts", default-features = false }
+
+# For `PROTOCOL_VERSION` only. `remote` is the feature that carries it, and the
+# adapter already enables the same set, so this adds nothing to the graph.
+aimdb-core = { path = "../../aimdb/aimdb-core", default-features = false, features = [
+    "alloc",
+    "remote",
+] }
+
+wasm-bindgen = "0.2"
+
+# The runtime half of the fusion, and the reason this crate exists.
+# `WasmDb::register::<T>()` is generic over the concrete type, so the contracts
+# above must compile into the same wasm module — a generic adapter that the UI
+# plugs a contracts package into from JavaScript is not constructible.
+#
+# Declared per-target because the adapter genuinely does not build anywhere
+# else: its bridge holds `web_sys` closures across await points, so the futures
+# are `!Send` and the host build fails with 14 errors. Gating it here rather
+# than excluding this crate from the workspace keeps `cargo build --workspace`,
+# `cargo test --workspace` and one lockfile working for everyone, and leaves the
+# key-rule exports below testable on the host — which is where their tests run.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+aimdb-wasm-adapter = { path = "../../aimdb/aimdb-wasm-adapter" }

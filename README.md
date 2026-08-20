@@ -34,6 +34,7 @@ over MQTT and one hub aggregates them into a queryable AimDB instance.
 | [`weather-station-openmeteo`](weather-station-openmeteo) | Station template that needs no hardware: it fetches real observations from Open-Meteo for a location and publishes them into an assigned slot. |
 | [`weather-station-knx`](weather-station-knx) | Station template fed by a real KNX installation: temperature and humidity read off the bus through a KNXnet/IP gateway, throttled, and published into an assigned slot. |
 | [`weather-hub`](weather-hub) | Aggregating hub: a fixed pool of station slots, dew point derived per slot, exposed over AimX for the CLI and the dashboard. |
+| [`weather-mesh-client`](weather-mesh-client) | Browser client: the wasm adapter fused with the mesh's contracts, plus the TypeScript facade published as `@aimdb/weather-mesh-client`. |
 
 Copy a station out as the starting point for one of your own. What you copy is
 the part that makes it your station — the poll loop, the bus decoding, the
