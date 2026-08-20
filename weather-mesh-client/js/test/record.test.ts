@@ -10,6 +10,17 @@ function reading(celsius: number): TemperatureV2 {
     return { schema_version: 2, celsius, timestamp: 1_754_044_800_000 };
 }
 
+/**
+ * A db with KEY configured, as it always is by the time a `RecordHandle`
+ * exists — the mesh only builds handles over keys it configured, because the
+ * real `WasmDb` throws for any other key (and so does the fake).
+ */
+function fakeDb(): FakeWasmDb {
+    const db = new FakeWasmDb();
+    db.configureRecord(KEY, { schemaType: "temperature", buffer: "SingleLatest" });
+    return db;
+}
+
 describe("RecordHandle", () => {
     /**
      * The one that earns its keep. `useSyncExternalStore` compares snapshots by
@@ -18,7 +29,7 @@ describe("RecordHandle", () => {
      * infinite loop. React would not report a bug; the tab would just get hot.
      */
     it("returns an identical snapshot until a value actually arrives", () => {
-        const db = new FakeWasmDb();
+        const db = fakeDb();
         db.set(KEY, reading(21.5));
         const handle = new RecordHandle<TemperatureV2>(db, KEY);
 
@@ -43,7 +54,7 @@ describe("RecordHandle", () => {
      * post-subscribe check would see no change.
      */
     it("re-reads after subscribing, so a value arriving mid-gap is not lost", () => {
-        const db = new FakeWasmDb();
+        const db = fakeDb();
         const handle = new RecordHandle<TemperatureV2>(db, KEY);
 
         expect(handle.getSnapshot()).toBeUndefined(); // render
@@ -55,7 +66,7 @@ describe("RecordHandle", () => {
     });
 
     it("opens one wasm subscription however many listeners attach", () => {
-        const db = new FakeWasmDb();
+        const db = fakeDb();
         const handle = new RecordHandle<TemperatureV2>(db, KEY);
 
         const a = vi.fn();
@@ -75,7 +86,7 @@ describe("RecordHandle", () => {
     });
 
     it("stops notifying a listener that unsubscribed", () => {
-        const db = new FakeWasmDb();
+        const db = fakeDb();
         const handle = new RecordHandle<TemperatureV2>(db, KEY);
 
         const stale = vi.fn();
@@ -95,7 +106,7 @@ describe("RecordHandle", () => {
      * cached value survives the last unsubscribe.
      */
     it("keeps its value across a full unsubscribe and resubscribe", () => {
-        const db = new FakeWasmDb();
+        const db = fakeDb();
         const handle = new RecordHandle<TemperatureV2>(db, KEY);
 
         const drop = handle.subscribe(() => {});
@@ -109,14 +120,14 @@ describe("RecordHandle", () => {
     });
 
     it("reports a slot that has published nothing as valueless", () => {
-        const handle = new RecordHandle<TemperatureV2>(new FakeWasmDb(), KEY);
+        const handle = new RecordHandle<TemperatureV2>(fakeDb(), KEY);
         expect(handle.getSnapshot()).toBeUndefined();
         expect(handle.hasValue).toBe(false);
     });
 
     /** Both are passed straight to `useSyncExternalStore`, unwrapped. */
     it("has callable methods that survive being detached from the handle", () => {
-        const db = new FakeWasmDb();
+        const db = fakeDb();
         db.set(KEY, reading(21));
         const handle = new RecordHandle<TemperatureV2>(db, KEY);
 

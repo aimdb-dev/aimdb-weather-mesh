@@ -9,11 +9,14 @@ import { createMesh, type ConnectOptions, type WeatherMesh } from "./mesh.js";
 import type { WeatherMeshWasm } from "./wasm.js";
 
 /**
- * Initialisation is deferred and memoised.
+ * Initialisation is deferred and memoised — successes only.
  *
  * Importing this package must have no side effects — an SSR bundle imports it
  * and must not touch `WebSocket` or `document` — so the wasm binary is fetched
- * on the first connect, and shared by every connect after that.
+ * on the first connect, and shared by every connect after that. A *failed*
+ * load is forgotten instead: the binary comes over the network, and caching
+ * the rejection would turn one flaky fetch into a page that can never
+ * connect again.
  */
 let loading: Promise<WeatherMeshWasm> | null = null;
 
@@ -65,6 +68,15 @@ export async function connectWeatherMesh(options: ConnectOptions = {}): Promise<
     if (typeof window === "undefined" || typeof WebSocket === "undefined") {
         throw new BrowserOnlyError();
     }
-    loading ??= loadWasm();
-    return createMesh(await loading, options);
+    const attempt = (loading ??= loadWasm());
+    let wasm: WeatherMeshWasm;
+    try {
+        wasm = await attempt;
+    } catch (cause) {
+        // Only clear the attempt we awaited: a concurrent caller may already
+        // have started a fresh load, and that one is not ours to discard.
+        if (loading === attempt) loading = null;
+        throw cause;
+    }
+    return createMesh(wasm, options);
 }

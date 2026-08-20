@@ -30,6 +30,7 @@ export {
     MeshConnectionError,
     MeshError,
     ProtocolMismatchError,
+    SlotNotServedError,
 } from "./errors.js";
 
 // The contract types, generated from the Rust definitions by ts-rs. They are

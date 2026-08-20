@@ -116,8 +116,10 @@ tracked in [`next-steps.md`](../next-steps.md):
 - **A protocol mismatch cannot be reported precisely.** A hub speaking a
   different AimX major refuses the WebSocket upgrade with HTTP 426, and a
   browser cannot read the status of a failed upgrade. `MeshConnectionError`
-  carries `probableProtocolMismatch` and this client's version;
-  `ProtocolMismatchError` exists for when the hub's version becomes knowable.
+  carries this client's version and a message naming both possibilities —
+  unreachable host and refused upgrade — since the browser cannot tell them
+  apart. `probableProtocolMismatch` and `ProtocolMismatchError` exist for
+  when the hub's version becomes knowable.
 - **Inbound payloads are v2 only.** The bridge deserializes with plain serde
   rather than through `Linkable`, so the `Migratable` chain does not run in the
   browser. That is invisible today because the hub normalizes on ingest — the
