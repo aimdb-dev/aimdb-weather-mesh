@@ -4,7 +4,7 @@
  * @module
  */
 
-import { LivenessUnavailableError, MeshConnectionError } from "./errors.js";
+import { LivenessUnavailableError, MeshConnectionError, SlotNotServedError } from "./errors.js";
 import type { DewPointV1 } from "./generated/DewPointV1.js";
 import type { HumidityV1 } from "./generated/HumidityV1.js";
 import type { TemperatureV2 } from "./generated/TemperatureV2.js";
@@ -105,12 +105,17 @@ export class WeatherMesh {
         db: WasmDb;
         bridge: WsBridge;
         rows: RecordMetadata[];
+        configuredKeys: ReadonlySet<string>;
     }) {
         this.#wasm = args.wasm;
         this.#db = args.db;
         this.#bridge = args.bridge;
 
+        // Only slots the database can actually dispatch get a handle. A slot
+        // whose rows were all skipped at configure time (say, no schema_type)
+        // would hand out records that throw `Unknown record key` on first use.
         for (const slot of slotsIn(args.wasm, args.rows)) {
+            if (!this.#slotIsConfigured(slot.slot, args.configuredKeys)) continue;
             this.#stations.set(slot.slot, this.#buildStation(slot.slot, slot.producedCount));
         }
     }
@@ -153,17 +158,19 @@ export class WeatherMesh {
     /**
      * A specific slot, by number.
      *
-     * Works for a slot that was not in the discovery reply — a station that
-     * joins later publishes into a record the hub already serves, and the
-     * handle starts producing values when it does.
+     * Any slot the hub serves works whether or not a station has joined it —
+     * the hub registers its whole pool at startup, so a station joining later
+     * publishes into a record this handle already watches, and values start
+     * arriving when it does.
+     *
+     * @throws {SlotNotServedError} for a slot the hub was not serving at
+     * connect time. The local database holds no record for it, so a handle
+     * could never produce a value; reconnect to pick up a reconfigured hub.
      */
     station(slot: number): StationHandle {
         this.#assertOpen();
-        let handle = this.#stations.get(slot);
-        if (handle === undefined) {
-            handle = this.#buildStation(slot, undefined);
-            this.#stations.set(slot, handle);
-        }
+        const handle = this.#stations.get(slot);
+        if (handle === undefined) throw new SlotNotServedError(slot);
         return handle;
     }
 
@@ -183,6 +190,14 @@ export class WeatherMesh {
         // handle, and freeing underneath it is a use-after-free in wasm.
         this.#bridge.free();
         this.#db.free();
+    }
+
+    #slotIsConfigured(slot: number, configured: ReadonlySet<string>): boolean {
+        return [
+            this.#wasm.temperatureKey(slot),
+            this.#wasm.humidityKey(slot),
+            this.#wasm.dewPointKey(slot),
+        ].some((key) => configured.has(key));
     }
 
     #buildStation(slot: number, producedCount: number | undefined): StationHandle {
@@ -257,6 +272,10 @@ export async function createMesh(
 
     const db = wasm.createWeatherDb();
     const known = new Set(db.knownSchemas());
+    // What the database will actually dispatch. The mesh view is built from
+    // this rather than the raw reply: a discovered-but-skipped record has no
+    // entry in the built database, and a handle over it would throw.
+    const configuredKeys = new Set<string>();
 
     for (const row of rows) {
         if (wasm.slotFromKey(row.record_key) === undefined) continue;
@@ -267,6 +286,7 @@ export async function createMesh(
             schemaType: row.schema_type,
             buffer: DEFAULT_BUFFER,
         });
+        configuredKeys.add(row.record_key);
     }
 
     await db.build();
@@ -277,5 +297,5 @@ export async function createMesh(
         lateJoin: options.lateJoin ?? true,
     });
 
-    return new WeatherMesh({ wasm, db, bridge, rows });
+    return new WeatherMesh({ wasm, db, bridge, rows, configuredKeys });
 }

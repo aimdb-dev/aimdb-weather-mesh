@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { LivenessUnavailableError, MeshConnectionError } from "../src/errors.js";
+import { LivenessUnavailableError, MeshConnectionError, SlotNotServedError } from "../src/errors.js";
 import { createMesh } from "../src/mesh.js";
 import { FakeWasmDb, fakeWasm, poolRows } from "./fake-wasm.js";
 
@@ -30,13 +30,18 @@ describe("createMesh", () => {
             { record_key: "station.1.temperature", name: "temperature", writable: false }, // no schema_type
         ];
         const { wasm, db } = fakeWasm({ rows });
-        await createMesh(wasm);
+        const mesh = await createMesh(wasm);
 
         expect(db.configured.map((c) => c.key)).toEqual([
             "station.0.temperature",
             "station.0.humidity",
             "station.0.dew_point",
         ]);
+        // Slot 1's only row was skipped, so the database holds nothing for it.
+        // A station handle over it would throw `Unknown record key` on first
+        // use, so the mesh does not offer one.
+        expect(mesh.stations().map((s) => s.slot)).toEqual([0]);
+        expect(() => mesh.station(1)).toThrow(SlotNotServedError);
     });
 
     it("wraps a failed discovery as a connection error naming the client version", async () => {
@@ -115,20 +120,34 @@ describe("WeatherMesh.station", () => {
         expect(station.temperature.getSnapshot()?.celsius).toBe(24.5);
     });
 
-    /** A station joining after connect publishes into a record the hub already
-     * serves, so the handle has to exist before the slot does. */
-    it("hands back a handle for a slot that was not in the discovery reply", async () => {
+    /** A station joining after connect publishes into a pool record the hub
+     * already serves, so the handle exists — and is empty — before the
+     * station does. */
+    it("hands back an empty handle for a pool slot no station has joined", async () => {
         const db = new FakeWasmDb();
         const { wasm } = fakeWasm({ rows: poolRows(2), db });
         const mesh = await createMesh(wasm);
 
-        const late = mesh.station(41);
-        expect(late.slot).toBe(41);
+        const late = mesh.station(1);
         expect(late.temperature.getSnapshot()).toBeUndefined();
 
-        db.push("station.41.humidity", { percent: 55, timestamp: 1 });
         late.humidity.subscribe(() => {});
+        db.push("station.1.humidity", { percent: 55, timestamp: 1 });
         expect(late.humidity.getSnapshot()?.percent).toBe(55);
+    });
+
+    /**
+     * A slot outside the hub's pool has no record in the built database, so a
+     * handle could never produce a value — `WasmDb` would throw `Unknown
+     * record key` at first use. Refusing here, with the slot named, beats an
+     * opaque wasm error later or a handle that is silently forever-empty.
+     */
+    it("throws for a slot the hub does not serve", async () => {
+        const { wasm } = fakeWasm({ rows: poolRows(2) });
+        const mesh = await createMesh(wasm);
+
+        expect(() => mesh.station(41)).toThrow(SlotNotServedError);
+        expect(() => mesh.station(41)).toThrow(/slot 41/);
     });
 
     it("returns the same handle for the same slot", async () => {

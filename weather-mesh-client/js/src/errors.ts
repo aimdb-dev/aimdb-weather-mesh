@@ -98,6 +98,32 @@ export class ProtocolMismatchError extends MeshConnectionError {
 }
 
 /**
+ * `station(n)` asked for a slot the hub was not serving at connect time.
+ *
+ * The local database is built from the connect-time discovery reply, so it
+ * holds no record for such a slot and a handle over it could never produce a
+ * value — the underlying `WasmDb` throws `Unknown record key` on first use.
+ * Handing a handle back anyway would make "the hub does not serve this slot"
+ * look exactly like "no station has published yet".
+ *
+ * Slots the hub serves but nobody publishes to are *not* this error: the hub
+ * registers its whole pool at startup, so a station that joins later lands in
+ * a record `station(n)` already watches.
+ */
+export class SlotNotServedError extends MeshError {
+    readonly slot: number;
+
+    constructor(slot: number) {
+        super(
+            `This hub was not serving slot ${slot} when this client connected. ` +
+                "stations() lists every slot it does serve; if the hub has been " +
+                "reconfigured since, reconnect to pick up its new pool.",
+        );
+        this.slot = slot;
+    }
+}
+
+/**
  * `stations({ live: true })` was asked to filter to slots that have published,
  * and the hub reported no per-record counts to filter on.
  *

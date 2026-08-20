@@ -5,7 +5,9 @@
  * exports in the Rust test suite, and mirrored here only so a test can name a
  * slot. What this fake actually models is the *behaviour the facade has to cope
  * with* — chiefly that `get()` returns a fresh object every call, which is the
- * reason `RecordHandle` caches at all.
+ * reason `RecordHandle` caches at all, and that every record access resolves
+ * through the configured-key table and throws for a key `configureRecord`
+ * never saw, exactly as the real `WasmDb::resolve` does.
  */
 
 import type { RecordMetadata, RecordOptions, WasmDb, WeatherMeshWasm, WsBridge } from "../src/wasm.js";
@@ -21,7 +23,21 @@ export class FakeWasmDb implements WasmDb {
     subscribeCalls = 0;
     unsubscribeCalls = 0;
 
+    readonly #configuredKeys = new Set<string>();
+
     constructor(private readonly schemas = ["temperature", "humidity", "dew_point"]) {}
+
+    /**
+     * The real `WasmDb` resolves every access through the table built from
+     * `configureRecord`, and throws `Unknown record key` for anything else —
+     * it does not quietly return `undefined`. Mirroring that here is what
+     * keeps a facade that only works against a lenient fake from passing.
+     */
+    #resolve(recordKey: string): void {
+        if (!this.#configuredKeys.has(recordKey)) {
+            throw new Error(`Unknown record key: ${recordKey}`);
+        }
+    }
 
     knownSchemas(): string[] {
         return [...this.schemas];
@@ -29,6 +45,7 @@ export class FakeWasmDb implements WasmDb {
 
     configureRecord(recordKey: string, options: RecordOptions): void {
         this.configured.push({ key: recordKey, options });
+        this.#configuredKeys.add(recordKey);
     }
 
     async build(): Promise<void> {
@@ -40,6 +57,7 @@ export class FakeWasmDb implements WasmDb {
     }
 
     subscribe(recordKey: string, callback: (value: unknown) => void): () => void {
+        this.#resolve(recordKey);
         this.subscribeCalls += 1;
         let set = this.subscribers.get(recordKey);
         if (!set) {
@@ -58,11 +76,13 @@ export class FakeWasmDb implements WasmDb {
      * This is the behaviour that makes a naive `getSnapshot` re-render forever.
      */
     get(recordKey: string): unknown {
+        this.#resolve(recordKey);
         const value = this.values.get(recordKey);
         return value === undefined ? undefined : structuredClone(value);
     }
 
     set(recordKey: string, value: unknown): void {
+        this.#resolve(recordKey);
         this.values.set(recordKey, value);
     }
 
@@ -74,8 +94,13 @@ export class FakeWasmDb implements WasmDb {
         this.freed = true;
     }
 
-    /** Simulate a value arriving from the hub. */
+    /**
+     * Simulate a value arriving from the hub. Throws for an unconfigured key —
+     * the real bridge drops those with a console warning, so a test pushing to
+     * one is asserting on a delivery that could never happen.
+     */
     push(recordKey: string, value: unknown): void {
+        this.#resolve(recordKey);
         this.values.set(recordKey, value);
         for (const cb of this.subscribers.get(recordKey) ?? []) cb(structuredClone(value));
     }
