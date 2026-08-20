@@ -44,6 +44,12 @@ describe("createMesh", () => {
         expect(() => mesh.station(1)).toThrow(SlotNotServedError);
     });
 
+    /**
+     * The browser cannot tell a dead host from a hub refusing this client's
+     * AimX major, so the error must name both possibilities — and must not
+     * claim the mismatch is probable, because nothing established that the
+     * hub answered at all.
+     */
     it("wraps a failed discovery as a connection error naming the client version", async () => {
         const { wasm } = fakeWasm({ rows: [], discoverError: new Error("socket closed") });
 
@@ -51,8 +57,11 @@ describe("createMesh", () => {
             (e: unknown) =>
                 e instanceof MeshConnectionError &&
                 e.clientSpeaks === "3.0" &&
-                e.probableProtocolMismatch &&
-                e.message.includes("wss://example.invalid/ws"),
+                !e.probableProtocolMismatch &&
+                e.message.includes("wss://example.invalid/ws") &&
+                e.message.includes("AimX 3.0") &&
+                e.message.includes("unreachable") &&
+                e.message.includes("different AimX major"),
         );
     });
 });

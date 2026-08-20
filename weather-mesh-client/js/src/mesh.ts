@@ -259,15 +259,12 @@ export async function createMesh(
     try {
         rows = await wasm.discover(url);
     } catch (cause) {
-        // A hub speaking another AimX major refuses the upgrade with HTTP 426,
-        // which a browser surfaces as an indistinguishable failure. Say so
-        // rather than reporting a generic network error.
-        throw new MeshConnectionError({
-            url,
-            clientSpeaks,
-            probableProtocolMismatch: true,
-            cause,
-        });
+        // The browser cannot tell a dead host from a hub refusing this
+        // client's AimX major (the 426 is invisible), and a discovery timeout
+        // is not a refusal at all. So the flag stays unset — the error's
+        // message names both possibilities — rather than branding every
+        // outage a probable version mismatch.
+        throw new MeshConnectionError({ url, clientSpeaks, cause });
     }
 
     const db = wasm.createWeatherDb();

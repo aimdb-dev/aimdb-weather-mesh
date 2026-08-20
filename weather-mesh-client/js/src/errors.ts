@@ -33,16 +33,24 @@ export class BrowserOnlyError extends MeshError {
 }
 
 /**
- * The hub could not be reached.
+ * Connecting to the hub failed, and the browser cannot say why.
  *
- * ## Why this is not always `ProtocolMismatchError`
+ * ## Why this is not `ProtocolMismatchError`
  *
  * A hub speaking a different AimX major refuses the WebSocket upgrade with
  * HTTP 426. A browser's WebSocket API does not expose the status code or body
  * of a failed upgrade — the page sees an opaque error event — so from here, a
- * refused upgrade and an unreachable host are indistinguishable. `clientSpeaks`
- * is reported so the message is still actionable, and `probableProtocolMismatch`
- * says the hub answered but rejected the connection.
+ * refused upgrade, a dead host and a wrong URL are indistinguishable. The
+ * message names both possibilities and reports `clientSpeaks`, so the version
+ * check is still actionable without pretending to knowledge the browser does
+ * not have.
+ *
+ * `probableProtocolMismatch` is `true` only when something actually
+ * established that the hub answered and refused. Nothing in today's browser
+ * path can — it stays `false` until the hub exposes a version probe (see
+ * `next-steps.md` §1). The field exists ahead of its trigger for the same
+ * reason {@link ProtocolMismatchError} does: npm versions are immutable, and
+ * its meaning must not change once something can set it.
  */
 export class MeshConnectionError extends MeshError {
     readonly url: string;
@@ -62,7 +70,10 @@ export class MeshConnectionError extends MeshError {
                     ? "The hub refused the connection, which usually means it speaks a " +
                       "different AimX major — check which version of " +
                       "@aimdb/weather-mesh-client matches it."
-                    : "Check that the hub is reachable and the URL is correct."),
+                    : "Either the hub is unreachable — check the URL — or it refused " +
+                      "the connection because it speaks a different AimX major; a " +
+                      "browser cannot tell these apart. If the hub is up, check which " +
+                      "version of @aimdb/weather-mesh-client matches it."),
             { cause: args.cause },
         );
         this.url = args.url;

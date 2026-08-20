@@ -25,11 +25,13 @@ A browser cannot produce it. The WebSocket API surfaces a failed upgrade as an
 opaque `error` event with no status code and no body, so from JavaScript a hub
 refusing 3.0 and a hub that is simply down are indistinguishable.
 
-**Today the client throws `MeshConnectionError`** with `clientSpeaks` and
-`probableProtocolMismatch: true`, and a message that says a refused connection
-usually means a version mismatch. `ProtocolMismatchError` is defined and
-exported already, deliberately unused — npm versions are immutable, and adding
-an error class later would break anyone catching on type.
+**Today the client throws `MeshConnectionError`** with `clientSpeaks` and a
+message naming both possibilities — unreachable host and refused upgrade —
+because the browser cannot tell them apart. `probableProtocolMismatch` stays
+`false` until something can actually establish that the hub answered; like
+`ProtocolMismatchError` — defined and exported, deliberately unused — it exists
+ahead of its trigger because npm versions are immutable, and changing an error's
+shape or meaning later would break anyone catching on type.
 
 **Options, cheapest first.**
 
