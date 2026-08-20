@@ -40,6 +40,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          # `make clippy` lints the browser client for wasm32 as well as the
+          # host — the fusion half only compiles there.
+          targets: wasm32-unknown-unknown
 
       - name: Cache dependencies
         uses: actions/cache@v6
