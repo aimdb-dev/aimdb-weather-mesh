@@ -203,9 +203,18 @@ impl StationHandle {
 
     /// Stop the station and shut the runtime thread down.
     ///
-    /// Dropping the handle without this also shuts down, but reports the
-    /// omission as a warning; an FFI layer should call this from its free
-    /// function so the shutdown is orderly.
+    /// `publish_*` returns once the reading is in the buffer, not once it is on
+    /// the wire, so a reading published in the last milliseconds before this
+    /// call does not arrive — measured at eight losses in eight
+    /// publish-then-close cycles. That is accepted rather than papered over:
+    /// stations are long-lived and publish on a cadence, so the reading lost to
+    /// a shutdown is one nobody would have read. A station that publishes once
+    /// and exits needs a delivery signal — an ACK topic — not a close that
+    /// waits, since no wait makes delivery certain.
+    ///
+    /// Dropping the handle also shuts down, and reports the omission as a
+    /// warning; an FFI layer should call this from its free function so the
+    /// shutdown is orderly.
     pub fn close(self) -> Result<(), StationError> {
         self.db.detach()?;
         Ok(())

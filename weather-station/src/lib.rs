@@ -104,7 +104,7 @@ mod slot;
 mod station;
 
 pub use broker::redact_url;
-pub use error::StationError;
+pub use error::{StationError, StationErrorKind};
 #[cfg(feature = "sync")]
 pub use handle::StationHandle;
 pub use profile::{

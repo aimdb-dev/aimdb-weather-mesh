@@ -8,6 +8,25 @@ use alloc::string::String;
 
 use thiserror::Error;
 
+/// What a caller does about a failure: fix the file, fix the deployment, or
+/// neither.
+///
+/// [`StationError`] is `#[non_exhaustive]`, so a mapping written outside this
+/// crate needs a wildcard arm and a variant added later lands in it silently.
+/// This is the classification such a mapping should match on instead — an FFI
+/// layer turning failures into exceptions is the case that needs it, and the
+/// three actions do not grow when the variants do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StationErrorKind {
+    /// The profile is wrong. Edit it, or have it re-issued.
+    Profile,
+    /// The broker is unreachable or refused the credential. Fix the
+    /// deployment, or re-join for a fresh slot.
+    Broker,
+    /// The station's own machinery or host. Neither of the above will help.
+    Runtime,
+}
+
 /// A station failed to join the mesh.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -82,4 +101,61 @@ pub enum StationError {
     #[cfg(feature = "sync")]
     #[error(transparent)]
     Sync(#[from] aimdb_sync::SyncError),
+}
+
+impl StationError {
+    /// Classify the failure by what the caller can do about it.
+    ///
+    /// A malformed broker URL is a [`Profile`](StationErrorKind::Profile)
+    /// fault, not a broker one: the broker was never reached, and the fix is
+    /// in the file.
+    pub fn kind(&self) -> StationErrorKind {
+        match self {
+            Self::UnsupportedProfileVersion { .. }
+            | Self::MalformedStationId(_)
+            | Self::BrokerUrl(_) => StationErrorKind::Profile,
+
+            Self::CredentialRejected(_)
+            | Self::BrokerUnreachable { .. }
+            | Self::BrokerTimeout(_) => StationErrorKind::Broker,
+
+            Self::Db(_) => StationErrorKind::Runtime,
+
+            #[cfg(feature = "sync")]
+            Self::ProfileUnreadable { .. } | Self::ProfileMalformed { .. } => {
+                StationErrorKind::Profile
+            }
+
+            #[cfg(feature = "sync")]
+            Self::GraphStartTimeout(_) | Self::NoWallClock | Self::Sync(_) => {
+                StationErrorKind::Runtime
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The point of `kind` is that it is exhaustive *here*, so a variant added
+    /// later is a compile error in this file rather than a silent
+    /// reclassification at every FFI boundary.
+    #[test]
+    fn the_three_kinds_split_by_what_fixes_them() {
+        assert_eq!(
+            StationError::MalformedStationId("x".into()).kind(),
+            StationErrorKind::Profile
+        );
+        assert_eq!(
+            StationError::BrokerUrl("x".into()).kind(),
+            StationErrorKind::Profile
+        );
+        assert_eq!(
+            StationError::BrokerTimeout("x".into()).kind(),
+            StationErrorKind::Broker
+        );
+        #[cfg(feature = "sync")]
+        assert_eq!(StationError::NoWallClock.kind(), StationErrorKind::Runtime);
+    }
 }

@@ -16,6 +16,7 @@
 
 #![cfg(feature = "sync")]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -23,6 +24,8 @@ use weather_station::{AppProfile, BrokerProfile, StationHandle};
 
 const BROKER: &str = "mqtt://localhost:1883";
 const SLOT: &str = "slot-11";
+
+static SUBSCRIBERS: AtomicUsize = AtomicUsize::new(0);
 
 /// Subscribe on a thread of its own and forward `(topic, payload)` pairs.
 fn subscribe(topic: &str) -> mpsc::Receiver<(String, String)> {
@@ -35,7 +38,13 @@ fn subscribe(topic: &str) -> mpsc::Receiver<(String, String)> {
             .build()
             .unwrap();
         rt.block_on(async move {
-            let mut opts = rumqttc::MqttOptions::new("weather-station-test-sub", "localhost", 1883);
+            // Unique per subscriber: two tests running in parallel under the
+            // same client id make the broker disconnect the first.
+            let client_id = format!(
+                "weather-station-test-sub-{}",
+                SUBSCRIBERS.fetch_add(1, Ordering::Relaxed)
+            );
+            let mut opts = rumqttc::MqttOptions::new(client_id, "localhost", 1883);
             opts.set_keep_alive(Duration::from_secs(5));
             let (client, mut event_loop) = rumqttc::AsyncClient::new(opts, 16);
             client
