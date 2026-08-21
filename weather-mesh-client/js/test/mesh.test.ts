@@ -44,6 +44,26 @@ describe("createMesh", () => {
         expect(() => mesh.station(1)).toThrow(SlotNotServedError);
     });
 
+    it("withholds a slot missing any one of its three readings", async () => {
+        // Slot 0 is whole. Slot 1 has temperature and humidity but its dew
+        // point row carries no schema_type, so nothing configures it.
+        const rows = [
+            ...poolRows(1),
+            { record_key: "station.1.temperature", name: "temperature", schema_type: "temperature", writable: false },
+            { record_key: "station.1.humidity", name: "humidity", schema_type: "humidity", writable: false },
+            { record_key: "station.1.dew_point", name: "dew_point", writable: false },
+        ];
+        const { wasm } = fakeWasm({ rows });
+        const mesh = await createMesh(wasm);
+
+        // A `StationHandle` promises all three readings. Offering slot 1 would
+        // mean `station(1).dewPoint.subscribe()` throwing `Unknown record key`
+        // on a handle that looks indistinguishable from a working one, so the
+        // slot is withheld entirely instead.
+        expect(mesh.stations().map((s) => s.slot)).toEqual([0]);
+        expect(() => mesh.station(1)).toThrow(SlotNotServedError);
+    });
+
     /**
      * The browser cannot tell a dead host from a hub refusing this client's
      * AimX major, so the error must name both possibilities — and must not
