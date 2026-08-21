@@ -2,7 +2,7 @@
     "name": "@aimdb/weather-mesh-client",
     "version": "3.0.0",
     "description": "Browser client for the AimDB weather mesh \u2014 typed readings over AimX, no keys to spell",
-    "license": "MIT OR Apache-2.0",
+    "license": "Apache-2.0",
     "type": "module",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",

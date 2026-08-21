@@ -3,7 +3,7 @@ name = "weather-mesh-client"
 version = "0.1.0"
 edition = "2021"
 description = "Browser client for the AimDB weather mesh: the wasm adapter fused with the mesh's contracts and naming rule"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 # Never published to crates.io. This crate's artifact is the npm package
 # `@aimdb/weather-mesh-client`, built from it by wasm-pack — there is no Rust
 # consumer, and publishing the source would claim a crates.io name for
