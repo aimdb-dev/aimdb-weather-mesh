@@ -111,13 +111,9 @@ export class WeatherMesh {
         this.#db = args.db;
         this.#bridge = args.bridge;
 
-        // Only slots the database can dispatch *in full* get a handle. A
-        // `StationHandle` exposes three readings unconditionally, so a slot
-        // missing any one of them — a row skipped at configure time for want of
-        // a schema_type, say — would hand out a record that throws
-        // `Unknown record key` the first time anything touched it. Requiring
-        // all three makes a partial slot absent rather than subtly broken,
-        // which is the failure a caller can actually see and report.
+        // A `StationHandle` exposes all three readings unconditionally, so a
+        // slot missing any one of them would hand out a record that throws
+        // `Unknown record key` on first use. Withhold the slot instead.
         for (const slot of slotsIn(args.wasm, args.rows)) {
             if (!this.#slotIsConfigured(slot.slot, args.configuredKeys)) continue;
             this.#stations.set(slot.slot, this.#buildStation(slot.slot, slot.producedCount));

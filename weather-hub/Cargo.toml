@@ -33,6 +33,11 @@ aimdb-mqtt-connector = { path = "../../aimdb/aimdb-mqtt-connector", features = [
 aimdb-tcp-connector = { path = "../../aimdb/aimdb-tcp-connector", features = [
     "tokio-runtime",
 ] }
+# Browser-facing AimX: the only transport `@aimdb/weather-mesh-client` can use.
+aimdb-websocket-connector = { path = "../../aimdb/aimdb-websocket-connector", features = [
+    "tokio-runtime",
+    "tracing",
+] }
 
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
