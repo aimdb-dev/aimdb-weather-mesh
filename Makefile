@@ -5,7 +5,7 @@
 # the same commands. Adding a feature to a crate means adding its combination
 # here — that is the only place the matrix lives.
 
-.PHONY: help build test fmt fmt-check clippy test-embedded lockfile check clean clean-embedded \
+.PHONY: help build test fmt fmt-check clippy test-embedded lockfile check spike clean clean-embedded \
 	ts-bindings ts-bindings-check wasm-check wasm js
 .DEFAULT_GOAL := help
 
@@ -30,7 +30,7 @@ TS_BINDINGS_FEATURES := ts,linkable,migratable
 # into path dependencies outside this repository (the sibling aimdb checkout
 # and its embassy submodule), which both formats code we do not own and makes
 # the result depend on whether that submodule is present.
-PACKAGES := weather-contracts weather-station weather-station-openmeteo weather-station-knx weather-hub weather-mesh-client
+PACKAGES := weather-contracts weather-station weather-station-openmeteo weather-station-knx weather-hub weather-mesh-client weather-station-py
 
 # Many cargo invocations in sequence with different feature sets can hit
 # "Stale file handle" linker errors on Docker overlay filesystems.
@@ -61,6 +61,9 @@ help:
 	@printf "    lockfile       Fail if Cargo.lock is stale for the current sibling checkout\n"
 	@printf "    check          Everything above — run before pushing\n"
 	@printf "\n"
+	@printf "  $(YELLOW)Python station spike:$(NC)\n"
+	@printf "    spike          Exercise the pyo3 door against a local broker (needs mosquitto)\n"
+	@printf "\n"
 	@printf "  $(YELLOW)Browser client:$(NC)\n"
 	@printf "    wasm           Build the npm package with wasm-pack (needs wasm-pack)\n"
 	@printf "\n"
@@ -69,6 +72,17 @@ help:
 	@printf "\n"
 	@printf "  $(BLUE)Note:$(NC) this workspace reaches the aimdb crates by path, so a sibling\n"
 	@printf "        aimdb checkout must exist at ../aimdb.\n"
+
+## Exercise the pyo3 door — see weather-station-py/README.md
+##
+## Deliberately outside `check`: it needs mosquitto and an interpreter, and it
+## is a spike rather than a gate. It reports known findings without failing on
+## them, so a finding that stops reproducing is visible in the output.
+spike:
+	@printf "$(GREEN)Building the Python module...$(NC)\n"
+	cargo build -p weather-station-py
+	@printf "$(GREEN)Running the spike...$(NC)\n"
+	python3 weather-station-py/python/spike.py
 
 ## Build the workspace
 build:
@@ -146,6 +160,8 @@ clippy:
 	cargo clippy -p weather-mesh-client --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on weather-mesh-client ($(WASM_TARGET): the fusion)$(NC)\n"
 	cargo clippy -p weather-mesh-client --target $(WASM_TARGET) --target-dir $(WASM_CHECK_TARGET_DIR) -- -D warnings
+	@printf "$(YELLOW)  → Clippy on weather-station-py (the pyo3 door)$(NC)\n"
+	cargo clippy -p weather-station-py --all-targets -- -D warnings
 	@printf "$(GREEN)✓ Clippy clean!$(NC)\n"
 
 ## Cross-compile the no_std crates for the embedded target

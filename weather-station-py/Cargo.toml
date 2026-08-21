@@ -1,0 +1,24 @@
+[package]
+name = "weather-station-py"
+version = "0.1.0"
+edition = "2021"
+description = "Spike: the pyo3 door onto StationHandle, built to find out what an FFI layer needs before the crates are published"
+license = "Apache-2.0"
+# Never published. This is the experiment §6 runs before the release train, not
+# the wheel — the wheel is a later tag, and it will carry maturin metadata this
+# crate deliberately does not.
+publish = false
+
+[lib]
+# The Python module is `weather_station`; the crate is named for the workspace.
+name = "weather_station"
+crate-type = ["cdylib"]
+
+[dependencies]
+weather-station = { path = "../weather-station", features = ["sync"] }
+
+# `extension-module` keeps the module from linking libpython, which is what
+# makes one build loadable by any interpreter. `abi3-py39` is the wheel matrix
+# decision (§8) exercised early: one artifact per platform, not per platform ×
+# Python version.
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"] }
