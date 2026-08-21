@@ -14,11 +14,13 @@ use aimdb_data_contracts::{RandomWalkParams, Simulatable};
 use rand::RngExt;
 
 /// Humidity sensor reading
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HumidityV1 {
     /// Relative humidity as a percentage (0-100)
     pub percent: f32,
     /// Unix timestamp (milliseconds) when reading was taken
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub timestamp: u64,
 }
 

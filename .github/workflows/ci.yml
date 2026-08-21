@@ -40,6 +40,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          # `make clippy` lints the browser client for wasm32 as well as the
+          # host — the fusion half only compiles there.
+          targets: wasm32-unknown-unknown
 
       - name: Cache dependencies
         uses: actions/cache@v6
@@ -141,3 +144,52 @@ jobs:
       - name: Check Cargo.lock is current for the sibling checkout
         working-directory: aimdb-weather-mesh
         run: make lockfile
+
+  browser-client:
+    name: Browser Client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: aimdb-weather-mesh
+
+      - uses: actions/checkout@v7
+        with:
+          repository: aimdb-dev/aimdb
+          path: aimdb
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: aimdb-weather-mesh/weather-mesh-client/js/package-lock.json
+
+      - name: Cache dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            aimdb-weather-mesh/target
+          key: ${{ runner.os }}-mesh-wasm-${{ hashFiles('aimdb-weather-mesh/Cargo.lock') }}
+
+      # The fusion half of the client only compiles for wasm32, so an ordinary
+      # `cargo build` never looks at it. This is the job that does.
+      - name: Compile the client for wasm32
+        working-directory: aimdb-weather-mesh
+        run: make wasm-check
+
+      # The npm package's claim is that its TypeScript types cannot drift from
+      # the Rust contracts. That is only true because this runs.
+      - name: Check the generated contract types are current
+        working-directory: aimdb-weather-mesh
+        run: make ts-bindings-check
+
+      - name: Typecheck and test the facade
+        working-directory: aimdb-weather-mesh
+        run: make js

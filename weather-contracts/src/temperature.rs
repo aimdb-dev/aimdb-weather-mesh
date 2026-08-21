@@ -29,6 +29,7 @@ use rand::RngExt;
 use aimdb_data_contracts::{MigrationError, MigrationStep};
 
 /// Temperature sensor reading in Celsius (schema v2)
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TemperatureV2 {
     /// Schema version (always 2 for current format)
@@ -37,6 +38,7 @@ pub struct TemperatureV2 {
     /// Temperature in degrees Celsius
     pub celsius: f32,
     /// Unix timestamp (milliseconds) when reading was taken
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub timestamp: u64,
 }
 

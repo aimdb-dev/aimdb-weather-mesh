@@ -52,6 +52,26 @@ async fn main() -> aimdb_core::DbResult<()> {
     tracing::info!("🔌 AimX endpoint: tcp://{}", aimx_bind);
     builder = builder.with_connector(aimdb_tcp_connector::TcpServer::new(&aimx_bind));
 
+    // Browser-facing AimX. Bound to all interfaces unlike the loopback TCP
+    // endpoint above: a browser client is off-host by definition.
+    let ws_port: u16 = std::env::var("AIMX_WS_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8080);
+    let ws_bind = std::net::SocketAddr::from(([0, 0, 0, 0], ws_port));
+    tracing::info!("🌐 AimX WebSocket endpoint: ws://{}/ws", ws_bind);
+    builder = builder.with_connector({
+        let mut ws = aimdb_websocket_connector::WebSocketConnector::new();
+        // The connector keys its own schema registry by `T::NAME`, which both
+        // temperature versions share — registering v1 too would panic.
+        ws.register::<TemperatureV2>();
+        ws.register::<HumidityV1>();
+        ws.register::<DewPointV1>();
+        // No `with_auto_subscribe`: clients drive their own, and server-seeded
+        // subscriptions are invisible to `run_client` consumers like the bridge.
+        ws.bind(ws_bind).path("/ws").with_late_join(true)
+    });
+
     configure_mesh(&mut builder, slots);
 
     tracing::info!("✅ Weather Hub configured, starting...");

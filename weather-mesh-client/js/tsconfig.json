@@ -1,0 +1,20 @@
+{
+    // Typechecking config: covers the tests as well as the sources, because the
+    // tests are where the facade's contract is written down. Emits nothing —
+    // `tsconfig.build.json` is what produces the published `dist/`.
+    "compilerOptions": {
+        "target": "ES2022",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "lib": ["ES2022", "DOM"],
+        "strict": true,
+        "noUncheckedIndexedAccess": true,
+        "noImplicitOverride": true,
+        "verbatimModuleSyntax": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true,
+        "noEmit": true
+    },
+    "include": ["src", "test"],
+    "exclude": ["dist", "node_modules"]
+}

@@ -3,7 +3,7 @@ name = "weather-contracts"
 version = "0.1.0"
 edition = "2021"
 description = "Shared contracts and configuration for the weather mesh demo"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 publish = false
 
 [features]
@@ -12,6 +12,14 @@ std = ["aimdb-data-contracts/std"]
 linkable = ["aimdb-data-contracts/linkable", "serde_json"]
 simulatable = ["aimdb-data-contracts/simulatable", "rand"]
 migratable = ["aimdb-data-contracts/migratable"]
+# TypeScript bindings for the browser client, emitted at test time by ts-rs.
+#
+# Non-default and std-only by design (decision 3): ts-rs pulls in a derive and
+# a filesystem writer, and an MCU build of this crate must never see either.
+# The export directory is chosen by the caller through `TS_RS_EXPORT_DIR` —
+# see `make ts-bindings` — so no source file hardcodes a path into a sibling
+# crate.
+ts = ["std", "dep:ts-rs"]
 
 [dependencies]
 aimdb-data-contracts = { path = "../../aimdb/aimdb-data-contracts", default-features = false, features = [
@@ -22,3 +30,4 @@ serde_json = { workspace = true, optional = true }
 # RNG is caller-supplied at the station; the contract impls only use the
 # `Rng`/`RngExt` traits, so no `std_rng` here.
 rand = { version = "0.10.1", optional = true, default-features = false }
+ts-rs = { version = "12", optional = true }

@@ -3,7 +3,7 @@ name = "weather-hub"
 version = "0.1.0"
 edition = "2021"
 description = "Central weather mesh hub - aggregates data from all stations"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 publish = false
 
 [[bin]]
@@ -32,6 +32,11 @@ aimdb-mqtt-connector = { path = "../../aimdb/aimdb-mqtt-connector", features = [
 # AimX server: what `aimdb record list --url tcp://…:7433` talks to.
 aimdb-tcp-connector = { path = "../../aimdb/aimdb-tcp-connector", features = [
     "tokio-runtime",
+] }
+# Browser-facing AimX: the only transport `@aimdb/weather-mesh-client` can use.
+aimdb-websocket-connector = { path = "../../aimdb/aimdb-websocket-connector", features = [
+    "tokio-runtime",
+    "tracing",
 ] }
 
 tokio = { version = "1", features = ["full"] }
