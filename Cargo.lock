@@ -2393,6 +2393,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "weather-station-cpp"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
+ "weather-station",
+]
+
+[[package]]
 name = "weather-station-knx"
 version = "0.1.0"
 dependencies = [

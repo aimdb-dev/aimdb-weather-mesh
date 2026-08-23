@@ -8,6 +8,7 @@ members = [
     "weather-station-openmeteo",
     "weather-mesh-client",
     "weather-station-py",
+    "weather-station-cpp",
 ]
 
 

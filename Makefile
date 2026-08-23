@@ -5,7 +5,7 @@
 # the same commands. Adding a feature to a crate means adding its combination
 # here — that is the only place the matrix lives.
 
-.PHONY: help build test fmt fmt-check clippy test-embedded lockfile check spike clean clean-embedded \
+.PHONY: help build test fmt fmt-check clippy test-embedded lockfile check spike spike-cpp clean clean-embedded \
 	ts-bindings ts-bindings-check wasm-check wasm js
 .DEFAULT_GOAL := help
 
@@ -30,7 +30,7 @@ TS_BINDINGS_FEATURES := ts,linkable,migratable
 # into path dependencies outside this repository (the sibling aimdb checkout
 # and its embassy submodule), which both formats code we do not own and makes
 # the result depend on whether that submodule is present.
-PACKAGES := weather-contracts weather-station weather-station-openmeteo weather-station-knx weather-hub weather-mesh-client weather-station-py
+PACKAGES := weather-contracts weather-station weather-station-openmeteo weather-station-knx weather-hub weather-mesh-client weather-station-py weather-station-cpp
 
 # Many cargo invocations in sequence with different feature sets can hit
 # "Stale file handle" linker errors on Docker overlay filesystems.
@@ -61,8 +61,9 @@ help:
 	@printf "    lockfile       Fail if Cargo.lock is stale for the current sibling checkout\n"
 	@printf "    check          Everything above — run before pushing\n"
 	@printf "\n"
-	@printf "  $(YELLOW)Python station spike:$(NC)\n"
+	@printf "  $(YELLOW)FFI station spikes:$(NC)\n"
 	@printf "    spike          Exercise the pyo3 door against a local broker (needs mosquitto)\n"
+	@printf "    spike-cpp      Exercise the C ABI door the same way (needs mosquitto and a C++17 compiler)\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Browser client:$(NC)\n"
 	@printf "    wasm           Build the npm package with wasm-pack (needs wasm-pack)\n"
@@ -83,6 +84,30 @@ spike:
 	cargo build -p weather-station-py
 	@printf "$(GREEN)Running the spike...$(NC)\n"
 	python3 weather-station-py/python/spike.py
+
+## Exercise the C ABI door — see weather-station-cpp/README.md
+##
+## Outside `check` for the same reasons `spike` is, plus one more: it links a
+## C++ program against the cdylib, so it needs a C++17 compiler as well as
+## mosquitto.
+##
+## `--features spike-probe` adds one symbol, `ws_debug_panic`, so the panic
+## round can measure the guard rather than assert it. A shipped library must
+## not have it, which is why it is a feature rather than a `#[no_mangle]` fn.
+CXX ?= g++
+CXXFLAGS ?= -std=c++17 -Wall -Wextra -g -pthread
+FFI_TARGET_DIR := $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),target)/debug
+
+spike-cpp:
+	@printf "$(GREEN)Building the C ABI library...$(NC)\n"
+	cargo build -p weather-station-cpp --features spike-probe
+	@printf "$(GREEN)Building the C++ spike...$(NC)\n"
+	$(CXX) $(CXXFLAGS) -DWS_SPIKE_PROBE -Iweather-station-cpp/include \
+		weather-station-cpp/cpp/spike.cpp \
+		-L$(FFI_TARGET_DIR) -lweather_station_ffi \
+		-o $(FFI_TARGET_DIR)/spike-cpp
+	@printf "$(GREEN)Running the spike...$(NC)\n"
+	LD_LIBRARY_PATH=$(FFI_TARGET_DIR) $(FFI_TARGET_DIR)/spike-cpp
 
 ## Build the workspace
 build:

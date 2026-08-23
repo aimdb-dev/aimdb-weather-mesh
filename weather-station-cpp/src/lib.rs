@@ -1,0 +1,616 @@
+//! The C ABI door onto [`StationHandle`], built as a spike.
+//!
+//! Not the shipped library: no soname, no CMake package config, no generated
+//! header. It is the pendant of `weather-station-py` — the experiment that finds
+//! out what an FFI layer needs from the station crates before they reach a
+//! registry, run for the language where the boundary is a C ABI rather than an
+//! interpreter. Findings are in `README.md`.
+//!
+//! # Three rules this layer exists to keep
+//!
+//! **Nothing unwinds across the boundary.** A Rust panic that reaches a C++
+//! frame is undefined behaviour — there is no pyo3 here to turn it into an
+//! exception object. Every `extern "C"` function below wraps its body in
+//! [`catch_unwind`](std::panic::catch_unwind) and reports [`WS_ERR_PANIC`],
+//! and every callback this layer *invokes* is documented `noexcept` on the C++
+//! side for the same reason in the other direction.
+//!
+//! **Every argument is hostile.** C has no `Option`, no lifetime and no UTF-8
+//! guarantee, so a null pointer, a dangling one and a `const char*` that is not
+//! UTF-8 all arrive as ordinary calls. Only the first two of those are
+//! detectable; both are, here.
+//!
+//! **The callback thread is aimdb's runtime thread.** Once [`ws_init_logging`]
+//! is installed, aimdb's runtime thread calls out through a function pointer
+//! into the consuming application. That is the same lock ordering the Python
+//! door found — the GIL rewritten as "whatever lock the callback takes" — and
+//! it is *weaker* here only because C++ has no single process-wide lock to get
+//! wrong. See `README.md`.
+
+// The exported types carry their C names. A Rust-side `WsStation` aliased to
+// `ws_station` would put two spellings of one type in front of whoever reads
+// this file next to the header.
+#![allow(non_camel_case_types)]
+
+use std::cell::RefCell;
+use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::fmt::Write as _;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use tracing::field::{Field, Visit};
+use tracing::{Event, Level, Subscriber};
+use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
+
+use weather_station::{StationError, StationErrorKind, StationHandle, PROFILE_VERSION};
+
+/// `ws_station` is handed to C as a pointer and used from several threads at
+/// once, so the type behind it has to be `Send + Sync` for the same reason the
+/// pyclass did — with nothing to check it, since C has no bound to violate.
+/// Pinned here because an FFI layer is the only consumer that would notice.
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<StationHandle>();
+};
+
+// ---------------------------------------------------------------------------
+// Status codes
+// ---------------------------------------------------------------------------
+
+/// The call succeeded.
+pub const WS_OK: c_int = 0;
+/// The profile is wrong. Edit it, or have it re-issued.
+pub const WS_ERR_PROFILE: c_int = 1;
+/// The broker is unreachable or refused the credential.
+pub const WS_ERR_BROKER: c_int = 2;
+/// The station's own machinery or host.
+pub const WS_ERR_RUNTIME: c_int = 3;
+/// The station has been closed.
+pub const WS_ERR_CLOSED: c_int = 4;
+/// A null pointer, or a `const char*` that is not UTF-8.
+pub const WS_ERR_INVALID_ARGUMENT: c_int = 5;
+/// Rust panicked. The call had no effect the caller can rely on, and the
+/// station should be considered unusable.
+pub const WS_ERR_PANIC: c_int = 6;
+
+/// The ABI this build speaks. Bumped when a symbol changes shape, so a header
+/// and a library from different tags refuse each other at startup instead of
+/// disagreeing about a struct at run time.
+pub const WS_ABI_VERSION: u32 = 1;
+
+// ---------------------------------------------------------------------------
+// The last error, per thread
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Where the message goes when the return value is only a code.
+    ///
+    /// Thread-local because the alternative is a global one two publishing
+    /// threads overwrite for each other. Owned by this layer and freed on the
+    /// next failing call from the same thread, which is the contract
+    /// `strerror_r`-style APIs have taught C callers to expect.
+    static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
+}
+
+fn set_last_error(message: impl Into<Vec<u8>>) {
+    // A message containing an interior NUL cannot cross as a C string; keep the
+    // prefix rather than losing the whole message.
+    let bytes: Vec<u8> = message.into();
+    let cleaned = match CString::new(bytes.clone()) {
+        Ok(s) => s,
+        Err(err) => {
+            let upto = err.nul_position();
+            CString::new(&bytes[..upto]).unwrap_or_else(|_| CString::new("(unprintable)").unwrap())
+        }
+    };
+    LAST_ERROR.with(|slot| *slot.borrow_mut() = Some(cleaned));
+}
+
+fn clear_last_error() {
+    LAST_ERROR.with(|slot| *slot.borrow_mut() = None);
+}
+
+/// Record `err` for [`ws_last_error`] and return the code a caller acts on.
+///
+/// Dispatches on `kind()` rather than the variants: `StationError` is
+/// `#[non_exhaustive]`, so matching it here would need a wildcard and a variant
+/// added later would land in it silently — with no compiler to notice, since
+/// the C caller's `switch` has a `default` too.
+fn report(err: StationError) -> c_int {
+    set_last_error(err.to_string());
+    match err.kind() {
+        StationErrorKind::Profile => WS_ERR_PROFILE,
+        StationErrorKind::Broker => WS_ERR_BROKER,
+        StationErrorKind::Runtime => WS_ERR_RUNTIME,
+    }
+}
+
+/// Run `body`, turning a panic into [`WS_ERR_PANIC`] rather than undefined
+/// behaviour.
+///
+/// The one place this layer can be sure a panic stops. `AssertUnwindSafe` is
+/// honest rather than convenient: a panic mid-call may leave the station in a
+/// state no C caller can reason about, which is why the code says so instead of
+/// pretending the call simply failed.
+fn guard(body: impl FnOnce() -> c_int) -> c_int {
+    match catch_unwind(AssertUnwindSafe(body)) {
+        Ok(code) => code,
+        Err(payload) => {
+            let message = panic_message(&payload);
+            set_last_error(format!("panic across the FFI boundary: {message}"));
+            WS_ERR_PANIC
+        }
+    }
+}
+
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "(non-string panic payload)".to_owned()
+    }
+}
+
+/// A borrowed `const char*` as a `&str`, or `None` for null / non-UTF-8.
+///
+/// # Safety
+/// `ptr` must be null or a NUL-terminated string valid for the call.
+unsafe fn cstr(ptr: *const c_char) -> Option<&'static str> {
+    if ptr.is_null() {
+        return None;
+    }
+    CStr::from_ptr(ptr).to_str().ok()
+}
+
+// ---------------------------------------------------------------------------
+// The station
+// ---------------------------------------------------------------------------
+
+/// A station's seat in the mesh, behind a pointer.
+///
+/// `name` is owned here rather than borrowed from the slot: `MeshSlot::name`
+/// returns a `&str`, which is a pointer *and a length*, and C wants a NUL. The
+/// copy is made once at open so [`ws_station_name`] can hand back a pointer
+/// that stays valid until [`ws_station_free`] without allocating per call.
+pub struct ws_station {
+    inner: StationHandle,
+    name: CString,
+}
+
+/// `ptr` as a `&ws_station`, or `None`.
+///
+/// # Safety
+/// `ptr` must be null or a pointer returned by [`ws_station_open_profile`] that
+/// has not yet been passed to [`ws_station_free`].
+unsafe fn station<'a>(ptr: *const ws_station) -> Option<&'a ws_station> {
+    ptr.as_ref()
+}
+
+/// The ABI version this build speaks.
+#[no_mangle]
+pub extern "C" fn ws_abi_version() -> u32 {
+    WS_ABI_VERSION
+}
+
+/// The `profile_version` this build of the mesh understands.
+#[no_mangle]
+pub extern "C" fn ws_profile_version() -> u64 {
+    PROFILE_VERSION
+}
+
+/// The last failure on *this* thread, or `NULL` if the last call succeeded.
+///
+/// Valid until the next failing call on the same thread. Never freed by the
+/// caller.
+#[no_mangle]
+pub extern "C" fn ws_last_error() -> *const c_char {
+    LAST_ERROR.with(|slot| match slot.borrow().as_ref() {
+        Some(message) => message.as_ptr(),
+        None => std::ptr::null(),
+    })
+}
+
+/// Join the mesh from a `station.toml` path.
+///
+/// Blocks on the broker pre-flight and the graph's first pump. On success
+/// `*out` owns a station the caller must eventually pass to
+/// [`ws_station_free`].
+///
+/// `path` is bytes, and this layer requires them to be UTF-8. That is a real
+/// constraint rather than a formality: Rust's `Path` is UTF-8 on every platform
+/// this mesh targets, while a Windows console hands out UTF-16, so a shipped
+/// library needs a `_w` entry point or a documented encoding rule. Recorded in
+/// `README.md`.
+///
+/// # Safety
+/// `path` must be a NUL-terminated string and `out` a writable pointer.
+#[no_mangle]
+pub unsafe extern "C" fn ws_station_open_profile(
+    path: *const c_char,
+    out: *mut *mut ws_station,
+) -> c_int {
+    guard(|| {
+        if out.is_null() {
+            set_last_error("ws_station_open_profile: out must not be NULL");
+            return WS_ERR_INVALID_ARGUMENT;
+        }
+        // Written before any fallible step, so a caller that ignores the status
+        // and reads `*out` finds NULL rather than uninitialised stack.
+        *out = std::ptr::null_mut();
+
+        let Some(path) = cstr(path) else {
+            set_last_error("ws_station_open_profile: path must be a NUL-terminated UTF-8 string");
+            return WS_ERR_INVALID_ARGUMENT;
+        };
+
+        match StationHandle::open_profile(PathBuf::from(path)) {
+            Ok(handle) => {
+                let name = CString::new(handle.mesh_slot().name())
+                    .unwrap_or_else(|_| CString::new("(invalid name)").unwrap());
+                *out = Box::into_raw(Box::new(ws_station {
+                    inner: handle,
+                    name,
+                }));
+                clear_last_error();
+                WS_OK
+            }
+            Err(err) => report(err),
+        }
+    })
+}
+
+/// Refuse a call that needs a live runtime, with a message that says so.
+///
+/// Best-effort, exactly as the Python door's `ensure_open` is: `is_closed`
+/// reads an atomic, so a close racing this check merely means the call fails
+/// one layer down with aimdb's own "runtime thread has shut down".
+fn ensure_open(station: &ws_station) -> Option<c_int> {
+    if station.inner.is_closed() {
+        set_last_error("this station is closed");
+        return Some(WS_ERR_CLOSED);
+    }
+    None
+}
+
+macro_rules! publish_fn {
+    ($name:ident, $method:ident, $unit:ident) => {
+        /// Publish a reading. See the header for blocking behaviour.
+        ///
+        /// # Safety
+        /// `handle` must be a live station pointer.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(handle: *const ws_station, $unit: f32) -> c_int {
+            guard(|| {
+                let Some(station) = station(handle) else {
+                    set_last_error(concat!(stringify!($name), ": handle must not be NULL"));
+                    return WS_ERR_INVALID_ARGUMENT;
+                };
+                if let Some(code) = ensure_open(station) {
+                    return code;
+                }
+                match station.inner.$method($unit) {
+                    Ok(()) => {
+                        clear_last_error();
+                        WS_OK
+                    }
+                    Err(err) => report(err),
+                }
+            })
+        }
+    };
+}
+
+publish_fn!(ws_station_publish_temperature, publish_temperature, celsius);
+publish_fn!(ws_station_publish_humidity, publish_humidity, percent);
+publish_fn!(
+    ws_station_try_publish_temperature,
+    try_publish_temperature,
+    celsius
+);
+publish_fn!(
+    ws_station_try_publish_humidity,
+    try_publish_humidity,
+    percent
+);
+
+/// The slot number this station publishes into, or `0` for a null handle.
+///
+/// Still answers after a close: the slot comes from the profile, not the
+/// runtime, and a closed station is a thing a log line still wants to identify.
+///
+/// # Safety
+/// `handle` must be null or a live station pointer.
+#[no_mangle]
+pub unsafe extern "C" fn ws_station_slot(handle: *const ws_station) -> u16 {
+    // No status to return, so a panic here cannot be reported — which is why
+    // the body is trivial enough not to have one.
+    match station(handle) {
+        Some(station) => station.inner.mesh_slot().slot(),
+        None => 0,
+    }
+}
+
+/// The station's display name, as the profile issued it. Borrowed: valid until
+/// [`ws_station_free`], and never freed by the caller.
+///
+/// # Safety
+/// `handle` must be null or a live station pointer.
+#[no_mangle]
+pub unsafe extern "C" fn ws_station_name(handle: *const ws_station) -> *const c_char {
+    match station(handle) {
+        Some(station) => station.name.as_ptr(),
+        None => std::ptr::null(),
+    }
+}
+
+/// Whether the station has been closed. `true` for a null handle, because a
+/// station that does not exist is not open.
+///
+/// Reads an atomic, never a lock: this is what a caller asks while holding its
+/// own lock, and the answer must not queue behind a shutdown.
+///
+/// # Safety
+/// `handle` must be null or a live station pointer.
+#[no_mangle]
+pub unsafe extern "C" fn ws_station_is_closed(handle: *const ws_station) -> bool {
+    match station(handle) {
+        Some(station) => station.inner.is_closed(),
+        None => true,
+    }
+}
+
+/// Stop the station and shut its runtime thread down. Idempotent, and safe to
+/// call while other threads publish through the same handle.
+///
+/// Takes `const ws_station*` on purpose: `StationHandle::shutdown` takes
+/// `&self`, so this needs no exclusive access to a handle a publish is using.
+/// That property is the one the Python door had to have fixed in
+/// `weather-station` — this layer inherits it rather than re-solving it.
+///
+/// A reading published in the last milliseconds before this does not
+/// necessarily arrive; see `README.md`.
+///
+/// # Safety
+/// `handle` must be a live station pointer.
+#[no_mangle]
+pub unsafe extern "C" fn ws_station_close(handle: *const ws_station) -> c_int {
+    guard(|| {
+        let Some(station) = station(handle) else {
+            set_last_error("ws_station_close: handle must not be NULL");
+            return WS_ERR_INVALID_ARGUMENT;
+        };
+        match station.inner.shutdown() {
+            Ok(()) => {
+                clear_last_error();
+                WS_OK
+            }
+            Err(err) => report(err),
+        }
+    })
+}
+
+/// Release the station.
+///
+/// Closes first if the caller did not. Passing `NULL` is a no-op, so this can
+/// sit unguarded in a destructor.
+///
+/// **Not thread-safe against anything else on the same pointer.** Every other
+/// entry point takes a shared reference and may be called from any thread at
+/// any time; this one consumes the allocation, and C has no borrow checker to
+/// say so. It is the one place the C ABI is weaker than the Python door, where
+/// the interpreter's own reference count decided when the object died.
+///
+/// # Safety
+/// `handle` must be null or a pointer from [`ws_station_open_profile`] that has
+/// not yet been freed, and no other thread may touch it during or after this
+/// call.
+#[no_mangle]
+pub unsafe extern "C" fn ws_station_free(handle: *mut ws_station) {
+    if handle.is_null() {
+        return;
+    }
+    // A panic must not escape a destructor: C++ calls this from `~Station`,
+    // and a `~Station` running during unwinding that lets a second exception
+    // out calls `std::terminate`.
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let station = Box::from_raw(handle);
+        // Explicit rather than relying on `Drop`: the drop path logs a warning
+        // about an unclosed station, and a destructor is exactly where that
+        // warning would be noise.
+        let _ = station.inner.shutdown();
+        drop(station);
+    }));
+}
+
+/// Panic on purpose, so the spike can measure what the guard does with it.
+///
+/// Behind a feature, and never in a shipped build. It exists because "we catch
+/// panics" is a claim, and the spike's job is to turn claims into measurements:
+/// with `panic = "abort"` anywhere in the profile that produced this library,
+/// this function ends the calling C++ process instead of returning
+/// [`WS_ERR_PANIC`], and no amount of `catch_unwind` in the source changes that.
+#[cfg(feature = "spike-probe")]
+#[no_mangle]
+pub extern "C" fn ws_debug_panic() -> c_int {
+    guard(|| panic!("a panic raised on purpose by ws_debug_panic"))
+}
+
+// ---------------------------------------------------------------------------
+// The log sink
+// ---------------------------------------------------------------------------
+
+/// Level numbers, chosen to match Python's `logging` so the two doors report
+/// the same event as the same number. `TRACE` has no Python equivalent and
+/// lands below `DEBUG`.
+pub const WS_LOG_TRACE: c_int = 5;
+pub const WS_LOG_DEBUG: c_int = 10;
+pub const WS_LOG_INFO: c_int = 20;
+pub const WS_LOG_WARN: c_int = 30;
+pub const WS_LOG_ERROR: c_int = 40;
+
+/// What a log sink is called with. `target` is the emitting Rust module path
+/// with `::` intact — unlike the Python door, which translates to `.` because
+/// `logging` splits its hierarchy there; C has no hierarchy to fit.
+///
+/// Both strings are borrowed for the duration of the call only.
+pub type ws_log_callback = Option<
+    unsafe extern "C" fn(
+        level: c_int,
+        target: *const c_char,
+        message: *const c_char,
+        user_data: *mut c_void,
+    ),
+>;
+
+/// The installed sink. Written once, read from aimdb's runtime thread.
+///
+/// A `static mut` behind a `OnceLock` rather than an `AtomicPtr` pair because
+/// there is no way to *uninstall* it: `tracing`'s global subscriber is set for
+/// the life of the process. That is the sharpest new constraint this door
+/// found — see `README.md` — and the type reflects it rather than pretending a
+/// second call could swap the pointer.
+struct Sink {
+    callback: ws_log_callback,
+    user_data: usize,
+}
+
+// The pointer is opaque to this layer; the C side owns whatever it points at
+// and the contract requires it to outlive the process.
+unsafe impl Send for Sink {}
+unsafe impl Sync for Sink {}
+
+static SINK: std::sync::OnceLock<Sink> = std::sync::OnceLock::new();
+static SINK_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Default)]
+struct MessageVisitor {
+    message: String,
+    fields: String,
+}
+
+impl Visit for MessageVisitor {
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            let _ = write!(self.message, "{value:?}");
+        } else {
+            let _ = write!(self.fields, " {}={:?}", field.name(), value);
+        }
+    }
+}
+
+impl MessageVisitor {
+    fn finish(self) -> String {
+        let mut out = self.message;
+        out.push_str(&self.fields);
+        out
+    }
+}
+
+fn c_level(level: &Level) -> c_int {
+    match *level {
+        Level::TRACE => WS_LOG_TRACE,
+        Level::DEBUG => WS_LOG_DEBUG,
+        Level::INFO => WS_LOG_INFO,
+        Level::WARN => WS_LOG_WARN,
+        Level::ERROR => WS_LOG_ERROR,
+    }
+}
+
+/// A `tracing` layer that forwards events to a C function pointer.
+///
+/// The pendant of the Python door's `logging` bridge, and it exists for the
+/// same reason: an FFI layer is a library inside somebody else's application,
+/// and where the application's diagnostics go is the application's decision. No
+/// aimdb library installs a subscriber; this one installs a *sink the caller
+/// supplied*.
+struct CLoggingLayer;
+
+impl<S: Subscriber> Layer<S> for CLoggingLayer {
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        let Some(sink) = SINK.get() else { return };
+        let Some(callback) = sink.callback else {
+            return;
+        };
+
+        let meta = event.metadata();
+        let mut visitor = MessageVisitor::default();
+        event.record(&mut visitor);
+
+        // Interior NULs would truncate the message; an event is not worth a
+        // failure, so they are replaced rather than dropped.
+        let message = CString::new(visitor.finish().replace('\0', "?"))
+            .unwrap_or_else(|_| CString::new("(unprintable event)").unwrap());
+        let target = CString::new(meta.target().replace('\0', "?"))
+            .unwrap_or_else(|_| CString::new("(unprintable target)").unwrap());
+
+        // Runs on whatever thread emitted the event — aimdb's runtime thread
+        // included. Whatever the callback locks, it locks *from that thread*,
+        // which is the lock ordering `README.md` is about.
+        //
+        // The callback is required to be `noexcept`: a C++ exception unwinding
+        // out of here crosses Rust frames, which is undefined behaviour. The
+        // C++ header's trampoline catches; this catches a *Rust* panic, which
+        // is the only half this side can see.
+        let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
+            callback(
+                c_level(meta.level()),
+                target.as_ptr(),
+                message.as_ptr(),
+                sink.user_data as *mut c_void,
+            );
+        }));
+    }
+}
+
+/// Route the station's reporting — and aimdb's — to `callback`.
+///
+/// Returns `true` if this call installed the sink, `false` if one was already
+/// in place. Never panics and never aborts: a second call is something a
+/// library-inside-a-library does all the time, and there is no exception type
+/// here to carry the complaint.
+///
+/// `filter` takes `tracing`'s `EnvFilter` syntax, defaults to `RUST_LOG` when
+/// `NULL`, and falls back to `info`. It is the cheap gate *below* the callback:
+/// events it drops never reach C at all.
+///
+/// `user_data` is passed back untouched and **must outlive the process**. The
+/// sink cannot be uninstalled — see the module docs.
+///
+/// # Safety
+/// `callback` must be safe to call from any thread, must not unwind, and
+/// `user_data` must remain valid for as long as the process runs.
+#[no_mangle]
+pub unsafe extern "C" fn ws_init_logging(
+    filter: *const c_char,
+    callback: ws_log_callback,
+    user_data: *mut c_void,
+) -> bool {
+    let installed = guard(|| {
+        if SINK_INSTALLED.swap(true, Ordering::AcqRel) {
+            return 1;
+        }
+        let env_filter = match cstr(filter) {
+            Some(directives) => EnvFilter::new(directives),
+            None => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        };
+        let _ = SINK.set(Sink {
+            callback,
+            user_data: user_data as usize,
+        });
+        if tracing_subscriber::registry()
+            .with(env_filter)
+            .with(CLoggingLayer)
+            .try_init()
+            .is_err()
+        {
+            return 1;
+        }
+        0
+    });
+    installed == 0
+}
