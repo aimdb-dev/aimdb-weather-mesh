@@ -21,4 +21,18 @@ weather-station = { path = "../weather-station", features = ["sync"] }
 # makes one build loadable by any interpreter. `abi3-py39` is the wheel matrix
 # decision (§8) exercised early: one artifact per platform, not per platform ×
 # Python version.
+#
+# Left unconditional because this crate has no Rust tests. It cannot stay that
+# way in the wheel: `cargo test` builds a binary that must resolve CPython's
+# symbols, and with `extension-module` on they are deliberately absent — the
+# first `#[test]` that touches an interpreter fails at run time, not at link
+# time. pyo3 suggests an optional feature (`extension-module = []`, enabled by
+# maturin) for exactly this. Recorded here because recording what the wheel
+# inherits is what this crate is for.
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"] }
+
+# The `logging` bridge. Neither is a new crate in the build graph —
+# `weather-station` already pulls both — but a layer cannot be written against
+# a dependency this manifest does not name.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -131,16 +131,27 @@ pub mod __macro_deps {
 /// healthy one — it says nothing either way.
 ///
 /// `RUST_LOG` overrides the whole filter when set.
+///
+/// For a station *binary*, which is the application and therefore gets to make
+/// this decision. A library must not: an FFI layer inside someone else's
+/// process uses that host's logging instead — see `weather-station-py`'s
+/// `init_logging`.
+///
+/// Does nothing if a subscriber is already installed. `try_init` rather than
+/// `init` because the panic `init` raises on a second call is not a station's
+/// to raise: it crosses an FFI boundary as something the host cannot catch.
 #[cfg(feature = "tokio-runtime")]
 pub fn init_tracing(station_target: &str) {
     use alloc::format;
+    use tracing_subscriber::util::SubscriberInitExt;
 
-    tracing_subscriber::fmt()
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
                 format!("{station_target}=info,weather_station=info,aimdb_core=info,aimdb=info")
                     .into()
             }),
         )
-        .init();
+        .finish()
+        .try_init();
 }

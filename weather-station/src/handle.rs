@@ -2,8 +2,9 @@
 
 use alloc::string::{String, ToString};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use aimdb_core::{AimDbBuilder, RecordKey};
@@ -20,6 +21,13 @@ use crate::{check_profile_version, AppProfile, BrokerProfile, MeshSlot, StationE
 /// network round-trip. Exceeding it means the runtime thread is wedged, which
 /// is worth an error rather than a station that publishes into nothing.
 const GRAPH_START_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long [`StationHandle::shutdown`] waits for the runtime thread to stop.
+///
+/// The same argument as [`GRAPH_START_TIMEOUT`], applied on the way out: a
+/// wedged runtime thread should make shutdown fail, not hang the caller
+/// forever. `AimDbHandle::detach` has no timeout of its own.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A joined mesh station driven from outside the async runtime.
 ///
@@ -60,9 +68,24 @@ pub struct StationHandle {
     slot: MeshSlot,
     temperature: SyncProducer<TemperatureV2>,
     humidity: SyncProducer<HumidityV1>,
+    /// Whether [`shutdown`](Self::shutdown) has taken the handle out of `db`.
+    ///
+    /// An atomic rather than a peek at the mutex below, because
+    /// [`is_closed`](Self::is_closed) is what an FFI layer calls while holding
+    /// its own interpreter lock. See the lock-ordering note on `shutdown`.
+    closed: AtomicBool,
+    /// In a mutex so [`shutdown`](Self::shutdown) can take `&self`: a
+    /// `#[pymethods]` method — and the C ABI's free function after it — never
+    /// receives `self` by value, and a `&mut self` door would collide with a
+    /// publish already in flight.
+    ///
+    /// A publish never contends for this lock: [`SyncProducer`] holds its own
+    /// `Weak<AimDb>` and reaches the database without going through the handle,
+    /// so `shutdown` can never queue behind one.
+    ///
     /// Dropped last: the producers hold a weak reference to the database this
     /// handle owns, so it has to outlive them.
-    db: AimDbHandle,
+    db: Mutex<Option<AimDbHandle>>,
 }
 
 /// The mesh tables, parsed on behalf of a caller that has a file rather than a
@@ -151,7 +174,8 @@ impl StationHandle {
             slot,
             temperature,
             humidity,
-            db,
+            closed: AtomicBool::new(false),
+            db: Mutex::new(Some(db)),
         })
     }
 
@@ -203,21 +227,70 @@ impl StationHandle {
 
     /// Stop the station and shut the runtime thread down.
     ///
+    /// Idempotent, and safe to call while another thread is publishing: this
+    /// takes `&self`, so no exclusive borrow has to be won from a publish
+    /// already in flight. That matters most for the shape that needs it — a
+    /// signal handler closing the station while its sensor threads run.
+    ///
     /// `publish_*` returns once the reading is in the buffer, not once it is on
     /// the wire, so a reading published in the last milliseconds before this
-    /// call does not arrive — measured at eight losses in eight
-    /// publish-then-close cycles. That is accepted rather than papered over:
-    /// stations are long-lived and publish on a cadence, so the reading lost to
-    /// a shutdown is one nobody would have read. A station that publishes once
-    /// and exits needs a delivery signal — an ACK topic — not a close that
-    /// waits, since no wait makes delivery certain.
+    /// call may not arrive. How often is not fixed, which is the point: over
+    /// eight rounds of eight publish-then-close cycles against a loopback broker,
+    /// two to five of the eight temperatures arrived and none to four of the
+    /// humidities — the second of the two publishes has less time and fares
+    /// worse. That is accepted rather than papered over: stations are
+    /// long-lived and publish on a cadence, so the reading lost to a shutdown
+    /// is one nobody would have read. A station that publishes once and exits
+    /// needs a delivery signal — an ACK topic — not a close that waits, since
+    /// no wait makes delivery certain.
+    ///
+    /// After this returns, `publish_*` fails with
+    /// [`SyncError::RuntimeShutdown`](aimdb_sync::SyncError::RuntimeShutdown):
+    /// dropping the handle releases the last `Arc` to the database, so the
+    /// producers' weak references stop upgrading. That is deliberate. Keeping
+    /// the handle alive would let `set()` go on pushing into a buffer nobody
+    /// reads and go on returning `Ok`, which loses readings silently.
+    ///
+    /// # Lock ordering
+    ///
+    /// The guard is dropped *before* the runtime thread is joined — hence the
+    /// `let` below rather than matching on the `take()` directly, which would
+    /// extend the guard's lifetime to the end of the match. A caller that
+    /// blocks on this mutex while holding a lock the runtime thread needs (an
+    /// FFI layer's interpreter lock, say, when that thread logs through a
+    /// bridge into it) would otherwise deadlock against its own shutdown.
+    pub fn shutdown(&self) -> Result<(), StationError> {
+        let taken = self
+            .db
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        self.closed.store(true, Ordering::Release);
+        match taken {
+            Some(db) => {
+                db.detach_timeout(SHUTDOWN_TIMEOUT)?;
+                Ok(())
+            }
+            // Already shut down. Nothing to join, and nothing to report.
+            None => Ok(()),
+        }
+    }
+
+    /// Whether [`shutdown`](Self::shutdown) has run.
+    ///
+    /// Reads an atomic, never the mutex: a caller holding an interpreter lock
+    /// can ask this while a shutdown is joining the runtime thread without
+    /// closing the cycle described on `shutdown`.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    /// [`shutdown`](Self::shutdown) for a caller that owns the handle by value.
     ///
     /// Dropping the handle also shuts down, and reports the omission as a
-    /// warning; an FFI layer should call this from its free function so the
-    /// shutdown is orderly.
+    /// warning; prefer this so the shutdown is orderly.
     pub fn close(self) -> Result<(), StationError> {
-        self.db.detach()?;
-        Ok(())
+        self.shutdown()
     }
 }
 
