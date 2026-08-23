@@ -1,0 +1,127 @@
+diff --git a/aimdb-sync/src/handle.rs b/aimdb-sync/src/handle.rs
+index b5d8740..c2c456b 100644
+--- a/aimdb-sync/src/handle.rs
++++ b/aimdb-sync/src/handle.rs
+@@ -171,13 +171,18 @@ impl AimDbHandle {
+         // Create shutdown channel
+         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<ShutdownSignal>(1);
+ 
++        // Channel for passing the runtime handle back, rather than a mutex the
++        // caller polls. The receive below is what makes a runtime that fails to
++        // start an `AttachFailed` instead of a caller spinning forever: the
++        // thread's early return drops `handle_tx`, and a dropped sender closes
++        // the channel, so `blocking_recv` yields `None` rather than never
++        // yielding at all. Same shape as `new_from_builder`.
++        let (handle_tx, mut handle_rx) = mpsc::channel::<tokio::runtime::Handle>(1);
++
+         // Wrap database in Arc for sharing
+         let db = Arc::new(db);
+ 
+         // Spawn the runtime thread
+-        let runtime_handle_result = Arc::new(std::sync::Mutex::new(None));
+-        let runtime_handle_clone = runtime_handle_result.clone();
+-
+         let thread_handle = thread::Builder::new()
+             .name("aimdb-sync-runtime".to_string())
+             .spawn(move || {
+@@ -190,10 +195,10 @@ impl AimDbHandle {
+                     }
+                 };
+ 
+-                // Store the runtime handle so the main thread can access it
+-                {
+-                    let mut handle = runtime_handle_clone.lock().unwrap();
+-                    *handle = Some(runtime.handle().clone());
++                // Hand the runtime handle to the caller.
++                if handle_tx.blocking_send(runtime.handle().clone()).is_err() {
++                    log_error!("Failed to send runtime handle to main thread");
++                    return;
+                 }
+ 
+                 // Wait for shutdown signal
+@@ -206,14 +211,13 @@ impl AimDbHandle {
+                 message: format!("Failed to spawn runtime thread: {}", e),
+             })?;
+ 
+-        // Wait for runtime handle to be available
+-        let runtime_handle = loop {
+-            let handle_opt = runtime_handle_result.lock().unwrap().clone();
+-            if let Some(handle) = handle_opt {
+-                break handle;
+-            }
+-            thread::sleep(Duration::from_millis(1));
+-        };
++        // Wait for the runtime handle. Blocks on a condvar inside the channel,
++        // not on a sleep, and returns an error if the thread died first.
++        let runtime_handle = handle_rx
++            .blocking_recv()
++            .ok_or_else(|| SyncError::AttachFailed {
++                message: "Runtime thread failed to send handle".to_string(),
++            })?;
+ 
+         Ok(Self {
+             thread_handle: Some(thread_handle),
+@@ -355,36 +359,41 @@ impl AimDbHandle {
+         if let Some(thread_handle) = self.thread_handle.take() {
+             match timeout {
+                 Some(duration) => {
+-                    // Join with timeout using a different approach since JoinHandle
+-                    // doesn't directly support timeouts
+-                    let handle_thread = thread::spawn(move || thread_handle.join());
+-
+-                    // Wait for the thread to complete with timeout
+-                    let start = std::time::Instant::now();
+-                    loop {
+-                        if handle_thread.is_finished() {
+-                            break;
++                    // `JoinHandle` has no timed join, so a helper thread does the
++                    // blocking join and reports through a channel. The channel is
++                    // what makes this a wait rather than a poll: `recv_timeout`
++                    // parks until the runtime thread is actually down, so a
++                    // shutdown that takes 1 ms costs 1 ms instead of being rounded
++                    // up to the next tick of a sleep loop.
++                    let (done_tx, done_rx) = std::sync::mpsc::channel::<bool>();
++                    thread::spawn(move || {
++                        // Fails only if the caller already timed out and dropped
++                        // the receiver, which is not an error worth reporting —
++                        // it is how this thread learns nobody is listening.
++                        let _ = done_tx.send(thread_handle.join().is_ok());
++                    });
++
++                    match done_rx.recv_timeout(duration) {
++                        Ok(true) => {}
++                        Ok(false) => {
++                            return Err(SyncError::DetachFailed {
++                                message: "Runtime thread panicked".to_string(),
++                            })
+                         }
+-                        if start.elapsed() > duration {
++                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                             return Err(SyncError::DetachFailed {
+                                 message: format!(
+                                     "Runtime thread did not shut down within {:?}",
+                                     duration
+                                 ),
+-                            });
++                            })
++                        }
++                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
++                            return Err(SyncError::DetachFailed {
++                                message: "Failed to join helper thread".to_string(),
++                            })
+                         }
+-                        thread::sleep(Duration::from_millis(10));
+                     }
+-
+-                    // Retrieve the result
+-                    handle_thread
+-                        .join()
+-                        .map_err(|_| SyncError::DetachFailed {
+-                            message: "Failed to join helper thread".to_string(),
+-                        })?
+-                        .map_err(|_| SyncError::DetachFailed {
+-                            message: "Runtime thread panicked".to_string(),
+-                        })?;
+                 }
+                 None => {
+                     // Join without timeout
