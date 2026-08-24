@@ -22,15 +22,58 @@ let runtime_handle = loop {
 };
 ```
 
-Replaced by an `mpsc::channel` and one `blocking_recv()`. The mechanism that
-matters is not the removal of the sleep, it is what a closed channel means: the
-runtime thread's early return drops `handle_tx`, a dropped sender closes the
-channel, and `blocking_recv()` yields `None`. A runtime that fails to start
-becomes `SyncError::AttachFailed` instead of a caller that never returns.
+Replaced by a channel and one receive. The mechanism that matters is not the
+removal of the sleep, it is what a closed channel means: the runtime thread's
+early return drops `handle_tx`, a dropped sender closes the channel, and
+`blocking_recv()` yields `None`. A runtime that fails to start becomes
+`SyncError::AttachFailed` instead of a caller that never returns.
 
 **The correct implementation was already sixty lines up.** `new_from_builder`
 has used exactly this shape since it was written. Nothing had to be designed;
 the older constructor simply never picked it up. See §3.
+
+The channel carries a `Result`, not a bare handle:
+
+```rust
+/// What the runtime thread reports back while starting up: the thing itself,
+/// or why it could not be produced.
+type Startup<T> = Result<T, String>;
+
+fn recv_startup<T>(rx: &mut mpsc::Receiver<Startup<T>>, what: &str) -> SyncResult<T> {
+    match rx.blocking_recv() {
+        Some(Ok(value)) => Ok(value),
+        Some(Err(cause)) => Err(SyncError::AttachFailed { message: cause }),
+        None => Err(SyncError::AttachFailed {
+            message: format!("runtime thread stopped before sending the {}", what),
+        }),
+    }
+}
+```
+
+Three outcomes, three arms, no fourth state. `None` is the one that used to be a
+hang. `Err` is an addition rather than a consequence, and it is what an FFI
+consumer actually needs: without it a startup failure arrives as "runtime thread
+failed to send handle" while the real `io::Error` goes only to a log sink the
+caller may never have installed. The thread now reports its reason before dying:
+
+```rust
+Err(e) => {
+    let cause = format!("Failed to create Tokio runtime: {}", e);
+    log_error!("{}", cause);
+    let _ = handle_tx.blocking_send(Err(cause));
+    return;
+}
+```
+
+`new_from_builder` gets the same treatment on both of its channels, which also
+recovers the reason a *database build* failed — today that reason exists only in
+the log. Measured end to end by forcing a build failure and catching at the C++
+boundary:
+
+```
+before: Failed to attach database: Runtime thread failed to build database
+after:  Failed to attach database: Failed to build database: missing parameter 'broker.url'
+```
 
 ### `detach_internal` — the 10 ms poll
 
@@ -64,9 +107,15 @@ interval, paid by every shutdown in every language binding.
 A sweep of `aimdb-sync/src/` for `thread::sleep`, `is_finished`, `yield_now` and
 `spin` returns one comment and no code. The crate no longer busy-waits anywhere.
 
-Verified: `aimdb-sync` compiles, `cargo test -p weather-station --features sync`
-passes (16 / 2 ignored / 4), and `make spike-cpp` is all-green with the timings
-above.
+Verified: `aimdb-sync` compiles and is `cargo fmt` clean, `cargo test -p
+weather-station --features sync` passes (16 / 2 ignored / 4), and `make
+spike-cpp` is all-green with the timings above.
+
+One constraint is unchanged and worth stating in the docs: `blocking_recv` and
+`recv_timeout` both park the calling thread, so neither constructor may be
+called from inside a Tokio runtime. `new_from_builder` already carried that;
+`new` now carries it too, and `StationHandle` documents the same rule one layer
+up as "not reentrant into a runtime".
 
 ### What the detach patch does *not* fix
 
@@ -187,6 +236,7 @@ worse for a first FFI consumer than either state on its own.
 | | Was | Now |
 |---|---|---|
 | CR-2 unbounded spin on attach | read, severity overstated | **fixed**, patch in `patches/`; scope corrected in §2 |
+| startup failures reached the caller without a reason | not filed | **fixed** in the same patch — `Startup<T>` carries the cause into `AttachFailed` |
 | CR-3 detach poll + timeout | read | **poll fixed** (10 ms → 0 ms); unreclaimable helper and the post-timeout contract still open |
 | CR-4 `unwrap` on a poisoned mutex | two sites | **both gone** — the `Arc<Mutex<Option<Handle>>>` they guarded no longer exists |
 | CR-6 `SyncConsumer` shared access | "an API shape to reconsider" | **a breaking regression in the unreleased 0.6.0**, root-caused to a missing `Sync` bound in `aimdb-core` |
