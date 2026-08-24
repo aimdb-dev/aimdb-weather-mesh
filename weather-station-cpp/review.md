@@ -182,54 +182,109 @@ how this happened. If the team would rather not carry it, deprecating it in
 
 ---
 
-## 4. Escalation: CR-6 is a regression landing *in this release*
+## 4. CR-6: the diagnosis was right, the remedy and the severity were wrong
 
-`REQUIREMENTS.md` filed `SyncConsumer`'s `&mut self` receivers under "before a C
-ABI can expose more than publishing", and treated it as a long-standing API
-shape to reconsider. Reading `aimdb-sync/CHANGELOG.md` while tracing the above
-shows it is neither long-standing nor incidental. Under `[Unreleased]` — the
-0.6.0 being prepared — in **Changed (breaking)**:
+Two passes of this review said different things about `SyncConsumer`, and both
+were wrong in the same direction. `REQUIREMENTS.md` filed it as "an API shape to
+reconsider". The first pass of this document escalated it to "a breaking
+regression, the one release-gating finding". Measuring it says: neither.
 
-> **Issue #200:** the internal channel bridge to the `tokio` thread is gone —
-> blocking calls now call the runtime directly using the `block_on` seam. API
-> implications: […] `SyncConsumer`: `get`, `try_get`, `get_with_timeout`,
-> `get_latest`, and `get_latest_with_timeout` now take `&mut self` (was
-> `&self`) […] `SyncConsumer` no longer implements `Clone` or `Sync` (still
-> `Send`).
+Evidence is `probes/cr6-consumer-shape`, which exercises aimdb's API directly —
+the mesh spike cannot ask these questions, because `StationHandle` is
+publish-only.
 
-Confirmed against the code rather than taken from the changelog. The compiler's
-answer, from a compile-time assertion:
+### What is true
+
+`SyncConsumer` is `Send + !Sync`, has no `Clone`, and its methods take
+`&mut self`. Confirmed by the compiler:
 
 ```
 error[E0277]: `(dyn BufferReader<f32> + Send + 'static)` cannot be shared between threads safely
-note: required because it appears within the type `Box<(dyn BufferReader<f32> + Send + 'static)>`
 note: required because it appears within the type `Reader<f32>`
 note: required because it appears within the type `SyncConsumer<f32>`
 ```
 
-There is no `Clone` impl on `SyncConsumer`, and its test module asserts `Send`
-only, where `SyncProducer`'s asserts `Send + Sync`.
+And the crate's own changelog files it under **Changed (breaking)** for the
+unreleased 0.6.0, under issue #200. That much stands.
 
-**Why this matters more than the original filing said.** In 0.5.0 a consumer
-could be cloned and shared across threads. In 0.6.0 it can be moved to one
-thread and used there. Across a C ABI that is the difference between a
-`ws_consumer*` any thread may use — the property that makes `ws_station_*` safe
-today — and one that is undefined behaviour on second touch, with no borrow
-checker and no pyo3 borrow flag to catch it. The producer half kept `&self` and
-`Sync`, so the two halves of one binding would need opposite threading rules.
+### What the remedy should have been checked against
 
-**The root cause is one missing bound, and it is in `aimdb-core`, not
-`aimdb-sync`:** `Reader<T>` holds `Box<dyn BufferReader<T> + Send>`. Adding
-`+ Sync` there — where the implementations allow it — is what makes the rest
-possible; the `&self` receivers then need interior mutability in `SyncConsumer`.
+`&mut self` is not an oversight, it is the honest signature. A reader is a
+*cursor* — `BufferReader::poll_recv(&mut self)` advances it — so reading
+mutates. The question was never "can this be `&self`" but "what does a consumer
+represent", and the answer makes the FFI shape fall out.
 
-**This is the one finding that answers "is there a blocker" with a yes.** Not
-because it cannot be fixed later, but because 0.6.0 is the release that removes
-the property. Shipping it and restoring it afterwards means a documented
-capability that appears, disappears for one version, and returns — which is
-worse for a first FFI consumer than either state on its own.
+**A consumer is a subscription, and the handle hands out as many as you like.**
+`AimDbHandle::consumer()` takes `&self`, the handle is `Sync`, and each call is
+a fresh `subscribe_boxed()` with its own cursor:
 
----
+```
+1. N threads, one consumer each, created concurrently:
+   thread 0 saw [0, 1, 2, 3, 4]
+   thread 1 saw [0, 1, 2, 3, 4]
+   thread 2 saw [0, 1, 2, 3, 4]
+   thread 3 saw [0, 1, 2, 3, 4]
+   => every consumer has its own cursor: YES
+
+2. cost of handle.consumer(): 891ns per call over 1000 calls
+```
+
+So the consumer half of a C ABI needs no core change at all:
+`ws_consumer_open(station, key)` per thread, each `ws_consumer*` single-owner —
+the same ownership rule the header already states for `ws_station_free`, and one
+the C++ layer can turn back into a compile error with a move-only type.
+
+**Blocking consumers do not cost runtime workers.** `Waiter::block_on` is
+`Handle::block_on`, which drives the future on the *calling* thread. Sixteen
+threads parked in `get()` at once, all served:
+
+```
+4. 16 threads blocked in get() at once: 16/16 served
+```
+
+That is the C++ hub shape, and it was the thing actually worth worrying about.
+(Same reentrancy rule as the constructors in §1: `Handle::block_on` panics
+inside a Tokio runtime.)
+
+**The shared case already has a one-line answer.** `Mutex<T>` is `Sync` whenever
+`T: Send`, so a caller who genuinely wants one stream split across workers
+writes `Arc<Mutex<SyncConsumer<T>>>`, and it compiles today:
+
+```
+5. Arc<Mutex<SyncConsumer>> across 3 threads: each value went to exactly one worker: [100, 101, 102]
+```
+
+### Why the proposed fix would have made things worse
+
+Putting that `Mutex` *inside* `SyncConsumer` to recover `&self` — which is what
+CR-6 asked for — would impose split semantics on every caller, including the
+majority who want fan-out. It would also break `try_get`'s contract: a
+non-blocking call would have to wait on a mutex held by a blocking `get()`,
+which is exactly the "never blocks" promise the method exists to make.
+
+### What is actually left
+
+Documentation and a migration note, not an API change.
+
+- **Say what a consumer is.** "A subscription with its own cursor. Create one
+  per thread. Wrap it in a `Mutex` only if you want several threads to split one
+  stream." None of that is written down today, and it is the whole design.
+- **The changelog entry is accurate but reads as a loss.** "now takes
+  `&mut self` […] no longer implements `Clone` or `Sync`" tells a 0.5.0 user
+  what was removed and not what replaces it. It should name the replacement.
+- **One real migration hazard.** Cloning a consumer in 0.5.0 shared one stream
+  (split). Calling `handle.consumer()` twice in 0.6.0 gives two streams
+  (fan-out). A user who mechanically replaces `clone()` with `consumer()` gets
+  *different behaviour*, silently — each worker starts seeing every value
+  instead of its share. That deserves a sentence in the changelog, because it is
+  the one way this change can break a working program with no compile error.
+
+### On "release-gating"
+
+It is not. Nothing about the C++ consumer path is blocked, the capability that
+matters is available today, and the gap is prose. Retracting the escalation from
+the previous pass of this review: I asserted a blocker from a changelog entry
+and a compiler error without asking what the API was for.
 
 ## 5. Status of the requirements this review touched
 
@@ -239,7 +294,7 @@ worse for a first FFI consumer than either state on its own.
 | startup failures reached the caller without a reason | not filed | **fixed** in the same patch — `Startup<T>` carries the cause into `AttachFailed` |
 | CR-3 detach poll + timeout | read | **poll fixed** (10 ms → 0 ms); unreclaimable helper and the post-timeout contract still open |
 | CR-4 `unwrap` on a poisoned mutex | two sites | **both gone** — the `Arc<Mutex<Option<Handle>>>` they guarded no longer exists |
-| CR-6 `SyncConsumer` shared access | "an API shape to reconsider" | **a breaking regression in the unreleased 0.6.0**, root-caused to a missing `Sync` bound in `aimdb-core` |
+| CR-6 `SyncConsumer` shared access | "an API shape to reconsider", then "release-gating" | **neither** — the per-thread consumer works today at 891 ns; what is missing is documentation and a migration note. See §4 |
 
 CR-1 (fork), CR-5 (error classification), CR-7 through CR-12 are untouched by
 this review.

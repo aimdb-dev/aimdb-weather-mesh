@@ -1,0 +1,11 @@
+[workspace]
+
+[package]
+name = "cr6-probe"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+aimdb-core = { path = "../../../../aimdb/aimdb-core", features = ["std"] }
+aimdb-sync = { path = "../../../../aimdb/aimdb-sync" }
+aimdb-tokio-adapter = { path = "../../../../aimdb/aimdb-tokio-adapter" }

@@ -25,3 +25,6 @@ station*.toml
 
 # Log Files
 *.log
+
+# Probe workspaces build into their own target dirs.
+weather-station-cpp/probes/*/target/
