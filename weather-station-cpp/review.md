@@ -286,7 +286,119 @@ matters is available today, and the gap is prose. Retracting the escalation from
 the previous pass of this review: I asserted a blocker from a changelog entry
 and a compiler error without asking what the API was for.
 
-## 5. Status of the requirements this review touched
+## 5. CR-5: one classification for the whole stack, and what it costs
+
+Implemented, in `patches/aimdb-error-classification.patch`. This is the one
+finding with a deadline attached, so the point of doing it was to find out what
+it actually costs rather than to argue about it.
+
+### The shape
+
+`DbErrorKind` — eight kinds, each a different thing the caller does:
+
+| Kind | The caller… | From |
+|---|---|---|
+| `Retry` | tries again | `BufferEmpty`, `BufferFull` |
+| `Lagged` | notes the gap and continues | `BufferLagged` |
+| `Closed` | stops | `BufferClosed` |
+| `Transport` | retries, or fixes the deployment | `ConnectionFailed`, `Io`, `IoWithContext` |
+| `Data` | fixes the schema or the sender | `Json`, `JsonWithContext` |
+| `Configuration` | fixes the graph before starting | `MissingConfiguration`, `InvalidConfiguration`, `CyclicDependency`, `TransformInputNotFound` |
+| `Usage` | fixes this call site | `RecordNotFound`, `RecordKeyNotFound`, `InvalidRecordId`, `TypeMismatch`, `InvalidOperation`, `PermissionDenied` |
+| `Internal` | reports a bug | `RuntimeError`, `Internal` |
+
+Eight rather than `StationErrorKind`'s three because a database has more than
+three answers, and the test is not "how few" but **does each kind name a
+different action**. `Lagged` is separate from `Retry` because the caller lost
+data and may want to say so; `Closed` is separate because retrying cannot help.
+
+`SyncError::kind()` returns the *same* enum rather than one of its own, so an
+FFI layer has one switch for the whole stack: `Db(e)` delegates, timeouts are
+`Retry`, `RuntimeShutdown` is `Closed`. A buffer that is merely empty classifies
+identically whether it is reached through the facade or through `aimdb-core`.
+
+This follows a house style that already exists — `RpcError`, `CodecError` and
+`AuthError` in `session/mod.rs` are all `#[non_exhaustive]` with small,
+action-shaped variant sets. `DbError` and `SyncError` are the outliers, not the
+precedent.
+
+### Both halves of the property, verified
+
+**Inside the crate, a new variant is a compile error.** Adding one to `DbError`:
+
+```
+error[E0004]: non-exhaustive patterns: `&DbError::ProbeVariantAddedLater` not covered
+   --> aimdb-core/src/error.rs:324:15  (in `DbError::kind`)
+```
+
+Someone has to decide which action it belongs to, in the file that owns it.
+
+**Outside the crate, a wildcard is mandatory.** A downstream match naming all
+21 variants explicitly, with no wildcard:
+
+```
+error[E0004]: non-exhaustive patterns: `&_` not covered
+    = note: `BufferError` is marked as non-exhaustive, so a wildcard `_` is necessary
+```
+
+Together those two are the whole mechanism: reclassification happens once,
+deliberately, where the enum lives — instead of silently, at every boundary that
+had to write a wildcard.
+
+### What it costs: nothing that compiles today
+
+The blast radius was the open question, and it is smaller than the variant count
+suggests. `#[non_exhaustive]` on an enum blocks exhaustive *matching* downstream;
+it does not block *construction*, which is what most of the 19 files outside
+`aimdb-core` that mention `DbError::` are doing.
+
+Of the 24 real match arms across the workspace, every one is partial — code
+matches `BufferEmpty`, `BufferLagged` or `BufferClosed` and falls through. Nobody
+writes an exhaustive match over 21 variants. Adding both attributes compiled
+`aimdb-core`, `aimdb-sync`, `aimdb-tokio-adapter`, `aimdb-mqtt-connector`,
+`aimdb-data-contracts` and the whole mesh workspace with no change to any of
+them, and `make spike-cpp` stayed green.
+
+Not verified: `aimdb-embassy-adapter` and `aimdb-wasm-adapter`, which the mesh
+workspace does not build. Their arms (`buffer.rs` in both) are partial in the
+same way, so the expectation is the same, but that is a read rather than a
+build.
+
+### The judgment calls, flagged rather than buried
+
+- **`PermissionDenied` sits in `Usage`.** Arguable — it could be its own kind if
+  the remote-access work ever wants to distinguish "you may not" from "that is
+  not a thing".
+- **`BufferFull` sits in `Retry` alongside `BufferEmpty`.** They are opposite
+  conditions with the same answer. If backpressure ever needs a different
+  response from starvation, that is the first kind to split.
+- **`TransformInputNotFound` sits in `Configuration`, not `Usage`.** It is a
+  graph wiring mistake found at build time, not a bad call.
+
+### One thing this exposed, which is CR-2's to finish
+
+`SyncError::AttachFailed { message: String }` carries a `String`, so it
+classifies as `Internal` even when the underlying cause was a configuration
+mistake — and after the CR-2 patch that message now often *is* a configuration
+mistake, spelled out. The kind is thrown away one layer below where it would be
+useful.
+
+The fix is small and lands in the code CR-2 already touched: make the startup
+channel carry `DbError` instead of `String`, so `AttachFailed` can keep the
+cause's kind rather than flattening it. Left out of this patch because it
+changes a `SyncError` variant's shape, which is a decision rather than a
+cleanup — and `aimdb-sync` being 0.x makes it cheap whenever it is taken.
+
+### On the deadline
+
+`aimdb-sync` is 0.6.0 and unreleased, so `#[non_exhaustive]` there is free today
+and a routine 0.7.0 minor bump later. `aimdb-core` is 1.2.0 with 1.0.0 already
+shipped, so the attribute is a 2.0 either way — this release does not open or
+close that window, it only decides whether the window opens with `kind()`
+already in place. `kind()` alone is purely additive and can ship in 1.2.0
+regardless of what is decided about the attribute.
+
+## 6. Status of the requirements this review touched
 
 | | Was | Now |
 |---|---|---|
@@ -296,5 +408,6 @@ and a compiler error without asking what the API was for.
 | CR-4 `unwrap` on a poisoned mutex | two sites | **both gone** — the `Arc<Mutex<Option<Handle>>>` they guarded no longer exists |
 | CR-6 `SyncConsumer` shared access | "an API shape to reconsider", then "release-gating" | **neither** — the per-thread consumer works today at 891 ns; what is missing is documentation and a migration note. See §4 |
 
-CR-1 (fork), CR-5 (error classification), CR-7 through CR-12 are untouched by
-this review.
+| CR-5 error classification | filed, not designed | **implemented** — `DbErrorKind` (8 kinds), `SyncError::kind()` delegating to it, both enums `#[non_exhaustive]`; patch in `patches/`. Both halves of the exhaustiveness property verified, no downstream breakage. See §5 |
+
+CR-1 (fork) and CR-7 through CR-12 are untouched by this review.
