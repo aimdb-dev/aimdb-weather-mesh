@@ -613,32 +613,35 @@ static void concurrent_publishing(const fs::path &live) {
     station.close();
 }
 
-static void fork_round(const fs::path &live, const fs::path &captured_file) {
+static void fork_round(const fs::path &live, const fs::path &captured_file,
+                       const fs::path &workdir) {
     std::cout << "\nafter fork(), the child has no runtime thread" << std::endl;
     // No pendant in the Python door, which never asked. It matters more here:
     // a C++ daemon that double-forks, or a supervisor that fork()s per job, is
-    // an ordinary shape, and fork copies the address space but not the
-    // threads. The station object survives; the thread that pumps its graph
-    // does not.
+    // an ordinary shape, and fork copies the address space but not the threads.
+    // The station object survives; the thread that pumps its graph does not.
     //
-    // What makes this a finding rather than a caveat is what the child is
-    // told: `publish` reports success and `is_closed` reports open, and the
-    // reading is dropped. That is the failure mode the graph-start gate exists
-    // to prevent, reappearing on the other side of a fork.
+    // This round used to record three findings. `aimdb-sync` now stamps a fork
+    // generation on every handle, producer and consumer and refuses a stale
+    // one, so the child is told the truth instead of being handed a station
+    // that accepts readings nobody will ever send.
     weather_station::Station station(live);
     station.publish_temperature(11.0f); // parent, before the fork
     std::this_thread::sleep_for(300ms);
 
+    const fs::path child_says = workdir / "child-error.txt";
     pid_t pid = fork();
     if (pid == 0) {
         // Nothing here may allocate through a lock another thread held at the
-        // moment of the fork, so this is deliberately three calls and an exit.
+        // moment of the fork, so this is deliberately a few calls and an exit.
         bool closed = station.closed();
         int published = WS_ERR_RUNTIME;
         try {
             station.publish_temperature(99.0f);
             published = WS_OK;
-        } catch (...) {
+        } catch (const std::exception &exc) {
+            std::ofstream out(child_says);
+            out << exc.what();
         }
         _exit((closed ? 2 : 0) | (published == WS_OK ? 4 : 0));
     }
@@ -654,7 +657,6 @@ static void fork_round(const fs::path &live, const fs::path &captured_file) {
     station.close();
 
     bool child_reading_arrived = false;
-    bool parent_readings_arrived = false;
     int parent_seen = 0;
     for (const auto &line : read_lines(captured_file)) {
         if (line.find("99.0") != std::string::npos) {
@@ -664,17 +666,23 @@ static void fork_round(const fs::path &live, const fs::path &captured_file) {
             ++parent_seen;
         }
     }
-    parent_readings_arrived = parent_seen >= 2;
 
-    check("the parent keeps publishing across the fork", parent_readings_arrived,
+    check("the parent keeps publishing across the fork", parent_seen >= 2,
           std::to_string(parent_seen) + " of the parent's 2 readings arrived");
-    note("a forked child is told the station is open", child_saw_open,
-         "is_closed() reported " + std::string(child_saw_open ? "open" : "closed"));
-    note("a forked child's publish reports success", child_publish_succeeded,
-         child_publish_succeeded ? "returned WS_OK" : "refused");
-    note("and the reading is dropped in silence", !child_reading_arrived,
-         child_reading_arrived ? "the child's 99.0 reached the broker after all"
-                               : "the child's 99.0 never reached the broker");
+    check("a forked child is told the station is closed", !child_saw_open,
+          child_saw_open ? "is_closed() still reported open" : "is_closed() reported closed");
+    check("a forked child's publish is refused, not silently dropped",
+          !child_publish_succeeded,
+          child_publish_succeeded ? "returned WS_OK" : "threw");
+    check("no phantom reading reached the broker", !child_reading_arrived);
+
+    // Recorded rather than asserted: which layer answers first is a diagnostic
+    // question, not a correctness one. The station's own closed-check wins over
+    // aimdb's more specific "created before a fork()", so the message a C++
+    // caller reads is the blunter of the two.
+    auto lines = read_lines(child_says);
+    note("the child is told why", !lines.empty(),
+         lines.empty() ? "no message captured" : lines[0].substr(0, 70));
 }
 
 static void shutdown_under_load(const fs::path &live) {
@@ -999,7 +1007,7 @@ int main() {
         payload_shape(captured_file);
         two_stations(live, second, captured_file);
         concurrent_publishing(live);
-        fork_round(live, captured_file);
+        fork_round(live, captured_file, workdir);
         shutdown_under_load(live);
         destructor_under_load(live);
         lock_ordering(live);

@@ -95,6 +95,7 @@ version = "0.6.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
+ "libc",
  "thiserror",
  "tokio",
 ]

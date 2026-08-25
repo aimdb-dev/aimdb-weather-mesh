@@ -74,6 +74,13 @@ pub struct StationHandle {
     /// [`is_closed`](Self::is_closed) is what an FFI layer calls while holding
     /// its own interpreter lock. See the lock-ordering note on `shutdown`.
     closed: AtomicBool,
+    /// The fork generation this station was opened in.
+    ///
+    /// `fork` copies this struct but not the runtime thread, so a child holds a
+    /// station that can never publish again. Recorded here rather than asked of
+    /// `db` because [`is_closed`](Self::is_closed) must not take that mutex —
+    /// see the lock-ordering note on [`shutdown`](Self::shutdown).
+    made_in: aimdb_sync::fork::Generation,
     /// In a mutex so [`shutdown`](Self::shutdown) can take `&self`: a
     /// `#[pymethods]` method — and the C ABI's free function after it — never
     /// receives `self` by value, and a `&mut self` door would collide with a
@@ -175,6 +182,7 @@ impl StationHandle {
             temperature,
             humidity,
             closed: AtomicBool::new(false),
+            made_in: aimdb_sync::fork::generation(),
             db: Mutex::new(Some(db)),
         })
     }
@@ -276,13 +284,18 @@ impl StationHandle {
         }
     }
 
-    /// Whether [`shutdown`](Self::shutdown) has run.
+    /// Whether this station can still publish.
     ///
-    /// Reads an atomic, never the mutex: a caller holding an interpreter lock
+    /// True after [`shutdown`](Self::shutdown), and true in a process that has
+    /// `fork`ed since the station was opened — a child inherits the struct but
+    /// not the runtime thread, so its station is closed in every sense that
+    /// matters to a caller deciding whether to publish.
+    ///
+    /// Reads two atomics, never the mutex: a caller holding an interpreter lock
     /// can ask this while a shutdown is joining the runtime thread without
     /// closing the cycle described on `shutdown`.
     pub fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::Acquire)
+        self.closed.load(Ordering::Acquire) || aimdb_sync::fork::forked_since(self.made_in)
     }
 
     /// [`shutdown`](Self::shutdown) for a caller that owns the handle by value.

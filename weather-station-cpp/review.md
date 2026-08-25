@@ -398,7 +398,120 @@ close that window, it only decides whether the window opens with `kind()`
 already in place. `kind()` alone is purely additive and can ship in 1.2.0
 regardless of what is decided about the attribute.
 
-## 6. Status of the requirements this review touched
+## 6. CR-1: fork safety, and a second failure the first probe hid
+
+Implemented across `patches/aimdb-sync-fork-safety.patch` and this repository.
+The only finding on the list that the spike *measured* as broken, and the only
+one where the fix had to be a process-global — which is why it belonged in the
+core rather than in the FFI layer.
+
+### There were two failures, not one
+
+The original round showed the silent drop: the child is told the station is
+open, `publish` returns `WS_OK`, the reading never reaches the broker. That
+round ended the child with `_exit(0)`, so it never ran a destructor. Running one
+finds the second failure:
+
+```
+child: about to let the destructor run
+thread '<unnamed>' panicked at library/std/src/thread/lifecycle.rs:247:
+threads should not terminate unexpectedly
+   5: std::thread::lifecycle::JoinInner<T>::join
+   7: aimdb_sync::handle::AimDbHandle::detach_internal
+```
+
+A forked child holds a `JoinHandle` for a thread that does not exist in this
+process, and joining it panics inside `std`. The panic lands on the helper
+thread rather than unwinding into C++, so `~Station` returns — but a Rust
+backtrace goes to fd 2 from inside a destructor, which is the CR-4 pattern
+again, reached by a different route. Present before this review's changes as
+well: the pre-CR-3 code joined on a helper thread too.
+
+### Detection: measured, not assumed
+
+The obvious check is a pid comparison. It is far too expensive to sit where it
+has to sit:
+
+```
+try_set()            121ns
+std::process::id()   321ns   (265.3% of a publish)
+relaxed atomic load  0ns     (0.00% of a publish)
+```
+
+Reading the pid per publish would cost more than twice the work it guards. So
+detection is a `pthread_atfork` child handler, and the check on the hot path is
+a relaxed atomic load. Re-measured after the change: `try_set()` at 107 ns —
+the guard does not show up.
+
+### A generation counter, not a flag
+
+A `bool` would poison the child permanently, including for a database the
+*child itself* attaches afterwards — a supervisor that forks per job and then
+does its own work would find the API dead for no reason. `GENERATION` is an
+`AtomicU64` the child handler increments; a handle, producer or consumer records
+it at construction and is stale when the two differ. Anything made *after* the
+fork is fine.
+
+The guard sits before the `Weak` upgrade, deliberately: a forked child's upgrade
+*succeeds*, because the `Arc` was copied with the address space. That is exactly
+why the buffer accepts a value nobody will read.
+
+### What it changed, end to end
+
+The spike's three notes are now four checks:
+
+```
+after fork(), the child has no runtime thread
+  ok    the parent keeps publishing across the fork — 2 of the parent's 2 readings arrived
+  ok    a forked child is told the station is closed — is_closed() reported closed
+  ok    a forked child's publish is refused, not silently dropped — threw
+  ok    no phantom reading reached the broker
+```
+
+and the destructor probe returns without a panic.
+
+Reached by four changes: `SyncProducer` and `SyncConsumer` refuse a stale
+generation with a new `SyncError::ForkedChild`; `AimDbHandle::producer` and
+`consumer` refuse to hand out more; `detach_internal` and `Drop` release the
+`JoinHandle` instead of joining a thread this process does not have; and
+`StationHandle::is_closed` — in this repository — reports closed in a child,
+since a station that cannot publish is closed in every sense a caller cares
+about.
+
+### Two things worth naming
+
+**CR-5 paid for itself immediately.** `SyncError::ForkedChild` is a new variant,
+which before this review would have been a breaking change. `SyncError` is
+`#[non_exhaustive]` as of §5, so it is additive — downstream matches already
+carry the wildcard that makes it safe. The classification work turned the next
+fix from a version bump into a patch.
+
+**`fork::generation` and `fork::forked_since` are public**, which was not the
+plan. `StationHandle::is_closed` must not take the mutex `shutdown` holds — the
+lock-ordering rule the Python door established — so it cannot ask the
+`AimDbHandle` whether the process forked. It records the generation itself and
+compares. Any FFI layer built directly on `aimdb-sync` will have the same
+problem for the same reason, so the two query functions are part of the surface
+rather than an internal detail.
+
+### The registration caveat, stated rather than skipped
+
+§7's rule (CR-9) says no aimdb library installs a process-global. This installs one.
+It is the exception the rule anticipated, on two conditions that are both met:
+only the crate owning the runtime thread can know the thread is gone, so nobody
+above can perform this check; and the handler is registered lazily, on the first
+`attach`, so a program that never uses the sync facade never gets one. The
+handler does a single relaxed `fetch_add`, which is permitted in a fork handler.
+
+### Left open
+
+Which layer answers first is a diagnostic question the fix does not settle. The
+station's own closed-check wins over aimdb's more specific message, so a C++
+caller reads "this station is closed" rather than "created before a fork()".
+Recorded as a `note` in the spike rather than fixed, because closing that gap
+means teaching a third layer about forks to improve one string.
+
+## 7. Status of the requirements this review touched
 
 | | Was | Now |
 |---|---|---|
@@ -410,4 +523,6 @@ regardless of what is decided about the attribute.
 
 | CR-5 error classification | filed, not designed | **implemented** — `DbErrorKind` (8 kinds), `SyncError::kind()` delegating to it, both enums `#[non_exhaustive]`; patch in `patches/`. Both halves of the exhaustiveness property verified, no downstream breakage. See §5 |
 
-CR-1 (fork) and CR-7 through CR-12 are untouched by this review.
+| CR-1 fork safety | measured, broken | **fixed** — fork generation + `pthread_atfork`, guards on producer, consumer, factories, detach and `Drop`; `StationHandle::is_closed` fork-aware. Four spike checks where there were three notes. See §6 |
+
+CR-7 through CR-12 are untouched by this review.

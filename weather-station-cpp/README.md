@@ -118,26 +118,43 @@ aimdb's runtime thread. Two things had to hold and do: a station held in a
 static and destroyed after `main` returns shuts down cleanly, and a destructor
 never lets an exception out (it would `std::terminate` during unwinding).
 
-### The one thing that is broken
+### The one thing that was broken, and is now fixed
 
-**After `fork()`, the child is told the station is open, its publish returns
-success, and the reading is dropped.**
+**After `fork()`, the child used to be told the station was open, its publish
+returned success, and the reading was dropped.**
 
-`fork` copies the address space but not the threads, so the child inherits a
+`fork` copies the address space but not the threads, so the child inherited a
 `ws_station` whose graph nobody pumps. Measured against a live broker: the
-parent's readings before and after the fork both arrive; the child's never does.
-`is_closed()` reports open. `publish_temperature` returns `WS_OK`.
+parent's readings before and after the fork both arrived; the child's never did.
+`is_closed()` reported open. `publish_temperature` returned `WS_OK`.
 
-That is precisely the failure the graph-start gate was added to prevent —
-`set()` returning `Ok` into a buffer nobody reads — reappearing on the other
-side of a `fork`. It matters more here than it would in Python: a daemon that
-double-forks, or a supervisor that forks per job, is an ordinary C++ shape.
+That was the failure the graph-start gate exists to prevent — `set()` returning
+`Ok` into a buffer nobody reads — reappearing on the other side of a `fork`, and
+it mattered more here than it would in Python: a daemon that double-forks, or a
+supervisor that forks per job, is an ordinary C++ shape.
 
-No fix is attempted in this layer, because none belongs here. `pthread_atfork`
-in an FFI shim would register a process-global handler on behalf of an
-application that did not ask for one — the same category of trespass as
-installing a subscriber or a panic hook. The requirement is upstream, in
-`REQUIREMENTS.md`.
+Running a *destructor* in the child found a second failure the first probe hid:
+joining a `JoinHandle` for a thread that does not exist in this process panics
+inside `std` with "threads should not terminate unexpectedly", putting a Rust
+backtrace on stderr from inside `~Station`.
+
+Both are fixed upstream, where they belonged. `aimdb-sync` now stamps a fork
+generation — maintained by a `pthread_atfork` handler, so the check on the
+publish path is a relaxed atomic load rather than a `getpid` that would cost
+more than twice the publish it guards — and refuses a stale handle, producer or
+consumer with `SyncError::ForkedChild`. `detach` and `Drop` release the join
+handle instead of joining. `StationHandle::is_closed` reports closed in a child.
+The round now reads:
+
+```
+  ok    the parent keeps publishing across the fork
+  ok    a forked child is told the station is closed
+  ok    a forked child's publish is refused, not silently dropped
+  ok    no phantom reading reached the broker
+```
+
+Details, and why the fix could not live in this layer, in `REQUIREMENTS.md`
+(CR-1) and `review.md` §6.
 
 ### Accepted, not fixed
 
