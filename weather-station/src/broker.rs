@@ -35,8 +35,15 @@ pub(crate) async fn preflight_broker_check(
     let mut opts = rumqttc::MqttOptions::new(format!("{client_id}-preflight"), host, port);
     opts.set_keep_alive(core::time::Duration::from_secs(10));
     opts.set_credentials(&broker.username, &broker.password);
+    // Gated whole, not just the configuration: rumqttc gates `TlsConfiguration`
+    // and `Transport::Tls` on having a backend at all.
+    #[cfg(any(feature = "native-tls", feature = "rustls"))]
     if tls {
-        opts.set_transport(rumqttc::Transport::Tls(rumqttc::TlsConfiguration::Native));
+        opts.set_transport(rumqttc::Transport::Tls(preflight_tls()?));
+    }
+    #[cfg(not(any(feature = "native-tls", feature = "rustls")))]
+    if tls {
+        return Err(no_tls_backend());
     }
 
     let (client, mut event_loop) = rumqttc::AsyncClient::new(opts, 4);
@@ -123,6 +130,54 @@ pub fn redact_url(url: &str) -> String {
         }
     }
     url.to_string()
+}
+
+/// The TLS configuration the pre-flight probe uses for `mqtts://`.
+///
+/// Deliberately the same backend the connector's data path uses — the features
+/// are wired so they cannot diverge. Two backends in one process would mean two
+/// TLS stacks, and a pre-flight that succeeded where the data path failed would
+/// defeat the point of probing at all.
+#[cfg(all(feature = "preflight", feature = "native-tls"))]
+fn preflight_tls() -> Result<rumqttc::TlsConfiguration, StationError> {
+    Ok(rumqttc::TlsConfiguration::Native)
+}
+
+#[cfg(all(feature = "preflight", feature = "rustls", not(feature = "native-tls")))]
+fn preflight_tls() -> Result<rumqttc::TlsConfiguration, StationError> {
+    use rumqttc::tokio_rustls::rustls::{ClientConfig, RootCertStore};
+
+    // By hand rather than `TlsConfiguration::default()`, which does this and
+    // then `expect`s. A station reached through an FFI layer cannot afford a
+    // panic on the connect path.
+    let mut roots = RootCertStore::empty();
+    for cert in rustls_native_certs::load_native_certs().certs {
+        let _ = roots.add(cert);
+    }
+    if roots.is_empty() {
+        return Err(StationError::BrokerUrl(alloc::string::String::from(
+            "no usable platform trust roots were found, so no broker certificate \
+             could be verified — install a CA bundle, or use an mqtt:// url on a \
+             trusted network",
+        )));
+    }
+    Ok(rumqttc::TlsConfiguration::Rustls(alloc::sync::Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    )))
+}
+
+/// No backend selected: `mqtt://` still works, `mqtts://` says why it does not.
+#[cfg(all(
+    feature = "preflight",
+    not(any(feature = "native-tls", feature = "rustls"))
+))]
+fn no_tls_backend() -> StationError {
+    StationError::BrokerUrl(alloc::string::String::from(
+        "this station was built without a TLS backend, so it cannot reach an \
+         mqtts:// broker — rebuild with the `rustls` or `native-tls` feature",
+    ))
 }
 
 #[cfg(test)]

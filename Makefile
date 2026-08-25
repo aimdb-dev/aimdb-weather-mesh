@@ -125,6 +125,10 @@ test:
 	cargo test -p weather-station
 	@printf "$(YELLOW)  → Testing weather-station (sync — the blocking door the FFI layers bind)$(NC)\n"
 	cargo test -p weather-station --features sync
+	@printf "$(YELLOW)  → Testing weather-station (sync + rustls — the FFI shared-library build)$(NC)\n"
+	cargo test -p weather-station --no-default-features --features "tokio-runtime,rustls,sync"
+	@printf "$(YELLOW)  → Testing weather-station (sync, no TLS backend — mqtt:// only)$(NC)\n"
+	cargo test -p weather-station --no-default-features --features "tokio-runtime,sync"
 	@printf "$(YELLOW)  → Testing weather-station-openmeteo$(NC)\n"
 	cargo test -p weather-station-openmeteo
 	@printf "$(YELLOW)  → Testing weather-station-knx$(NC)\n"
@@ -173,6 +177,10 @@ clippy:
 	cargo clippy -p weather-station --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on weather-station (sync)$(NC)\n"
 	cargo clippy -p weather-station --features sync --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on weather-station (sync + rustls)$(NC)\n"
+	cargo clippy -p weather-station --no-default-features --features "tokio-runtime,rustls,sync" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on weather-station (sync, no TLS backend)$(NC)\n"
+	cargo clippy -p weather-station --no-default-features --features "tokio-runtime,sync" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on weather-station (no_std, MCU feature set)$(NC)\n"
 	cargo clippy -p weather-station --no-default-features -- -D warnings
 	@printf "$(YELLOW)  → Clippy on weather-station-openmeteo$(NC)\n"

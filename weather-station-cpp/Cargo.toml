@@ -29,7 +29,15 @@ crate-type = ["cdylib", "staticlib"]
 spike-probe = []
 
 [dependencies]
-weather-station = { path = "../weather-station", features = ["sync"] }
+# `rustls` rather than the workspace default: this crate is the one that ships
+# as a shared library into somebody else's process, and CR-11 is about not
+# handing that process a second OpenSSL. `--no-default-features` is what stops
+# `native-tls` arriving through the default set alongside it.
+weather-station = { path = "../weather-station", default-features = false, features = [
+    "tokio-runtime",
+    "rustls",
+    "sync",
+] }
 
 # The log sink. Neither is new to the build graph — `weather-station` already
 # pulls both — but a layer cannot be written against a dependency this manifest

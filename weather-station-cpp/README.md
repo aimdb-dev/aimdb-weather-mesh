@@ -204,14 +204,17 @@ platform accident this document is recording, not a property to rely on.
 an archive (debug), which is what a static consumer's link step chews through
 rather than what it emits.
 
-**OpenSSL is in the link line.** The cdylib needs `libssl.so.3` and
-`libcrypto.so.3`, and a static consumer must pass `-lssl -lcrypto`. It arrives
-from `rumqttc`'s `use-native-tls`, which the `preflight` feature pulls in for one
-CONNECT. `weather-station`'s own docs already call the pre-flight "a second MQTT
-client bought for a single round-trip" and gate it for MCUs; for a C++ consumer
-it is also a system-OpenSSL ABI constraint on every build that links this
-library, and a second OpenSSL in a process that already has one. Worth deciding
-deliberately rather than inheriting.
+**OpenSSL is no longer in the link line.** It used to be: the cdylib needed
+`libssl.so.3` and `libcrypto.so.3`, and a static consumer had to pass
+`-lssl -lcrypto`, because `rumqttc` was pinned to `use-native-tls`. For a C++
+consumer that is a system-OpenSSL ABI constraint on every build that links this
+library, and a second OpenSSL in a process that very likely already has one.
+
+The backend is selectable now — `tokio-native-tls`, `tokio-rustls`, or neither —
+and this crate builds on `rustls`, so `ldd` shows only libc, libm and libgcc_s
+and the static link line is down to the platform basics. It costs binary size:
+3.9 MB → 8.1 MB release, 2.9 MB → 6.6 MB stripped, since rustls links the stack
+it no longer borrows. `review.md` §7 has the numbers and the reasoning.
 
 **`-fno-exceptions` does not compile.** The C++ header throws, so a consumer
 built without exceptions — not rare in embedded C++ shops — cannot use it. The C

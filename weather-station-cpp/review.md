@@ -511,7 +511,113 @@ caller reads "this station is closed" rather than "created before a fork()".
 Recorded as a `note` in the spike rather than fixed, because closing that gap
 means teaching a third layer about forks to improve one string.
 
-## 7. Status of the requirements this review touched
+## 7. CR-11: the TLS backend, and what selecting it actually costs
+
+Implemented across `patches/aimdb-mqtt-connector-tls-backend.patch` and this
+repository. The finding was measured from the start — `ldd` on the cdylib — so
+the work here was to find out whether the fix is as cheap as it looked. It is
+not quite, and there is a size bill nobody had counted.
+
+### It was a deliberate choice, not an oversight
+
+rumqttc's own default is `use-rustls`. Both `aimdb-mqtt-connector` and
+`weather-station` set `default-features = false` and then explicitly opt into
+`use-native-tls` — the system OpenSSL was selected *over* the pure-Rust default.
+
+Worth noting because the embedded half already went the other way: design 044's
+Embassy client uses `embedded-tls` with `rustpki`, `rsa` and `p384`, a pure-Rust
+stack with no system dependency at all. The host path is the outlier.
+
+### The measurement
+
+Before, on the cdylib:
+
+```
+libssl.so.3    => /lib/x86_64-linux-gnu/libssl.so.3
+libcrypto.so.3 => /lib/x86_64-linux-gnu/libcrypto.so.3
+native-static-libs: -lssl -lcrypto -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc
+```
+
+After, with `rustls`:
+
+```
+libgcc_s.so.1  libm.so.6  libc.so.6      (and the loader)
+native-static-libs: -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc
+```
+
+For a shared library dropped into somebody else's C++ application that is the
+whole point: no system-OpenSSL ABI constraint on every consuming build, and no
+second OpenSSL in a process that very likely already has one.
+
+### The bill
+
+| | native-tls | rustls |
+|---|---|---|
+| release `.so` | 3.9 MB | 8.1 MB |
+| stripped | 2.9 MB | 6.6 MB |
+| `ldd` | libssl, libcrypto | — |
+
+rustls more than doubles the artifact, because it links the TLS stack it no
+longer borrows. For a library shipped into a foreign process that is usually the
+right trade — a version conflict between two OpenSSLs is a crash at handshake
+time, and 3.7 MB is not — but it is a real number and it belongs in the
+decision rather than in a footnote.
+
+### Three states, not two
+
+`tokio-native-tls`, `tokio-rustls`, or neither. The third is a genuine choice
+rather than an oversight: a deployment that speaks `mqtt://` to a broker on a
+trusted network links no TLS stack at all, which for a shared library is the
+difference between inheriting a system OpenSSL ABI and inheriting nothing.
+`mqtts://` then fails at connect time with a message naming the missing feature.
+
+That third state was the one piece of real work. rumqttc gates
+`TlsConfiguration` **and** `Transport::Tls` on having a backend, so a build with
+neither cannot even name the types — the whole `if scheme == "mqtts"` branch has
+to be `#[cfg]`'d, not just its argument. A first attempt that gated only the
+configuration did not compile.
+
+### A panic found on the way
+
+The obvious rustls translation is `TlsConfiguration::default()`. It is not
+usable here:
+
+```rust
+for cert in load_native_certs().expect("could not load platform certs") {
+    root_cert_store.add(cert).unwrap();
+}
+```
+
+Two panics on the connect path, in a crate reached through an FFI boundary where
+a panic is undefined behaviour rather than an error. Both backends now build the
+configuration explicitly, and a machine with no usable trust roots gets a
+message saying so. This is CR-4's rule applied to a dependency rather than to
+aimdb's own code — worth noting that "the library must not panic" has to extend
+to what the library calls.
+
+### Where the choice lives
+
+In `weather-station`, and passed down. The pre-flight probe and the connector's
+data path must not disagree: two backends in one process means two TLS stacks,
+and a pre-flight that succeeded where the data path failed would defeat the
+point of probing at all. So `weather-station`'s `native-tls` and `rustls`
+features each enable both halves, and there is no way to name them separately.
+
+`weather-station`'s default is now `["tokio-runtime", "native-tls"]`, so every
+existing station builds exactly as before. `weather-station-cpp` — the crate
+that actually ships as a shared library — takes `default-features = false` with
+`rustls`.
+
+### Verified
+
+Four combinations build and test: default (native-tls), `rustls`, no backend,
+and the whole workspace. `make test` and `make clippy` carry all of them now, in
+the two entries added to each — this repository's convention is that the feature
+matrix lives in the Makefile, and a TLS backend is exactly the kind of choice
+that rots if CI only ever sees one side of it. `make spike-cpp` stays green and
+the cdylib's `ldd` stays clean.
+
+## 8. Status of the requirements this review touched
 
 | | Was | Now |
 |---|---|---|
@@ -525,4 +631,6 @@ means teaching a third layer about forks to improve one string.
 
 | CR-1 fork safety | measured, broken | **fixed** — fork generation + `pthread_atfork`, guards on producer, consumer, factories, detach and `Drop`; `StationHandle::is_closed` fork-aware. Four spike checks where there were three notes. See §6 |
 
-CR-7 through CR-12 are untouched by this review.
+| CR-11 TLS backend | measured, unfixed | **fixed** — `tokio-native-tls` / `tokio-rustls` / neither in the connector, mirrored in `weather-station`; the FFI crate builds on rustls and its `ldd` is clean. Costs 3.7 MB. See §7 |
+
+CR-7, CR-8, CR-9, CR-10 and CR-12 are untouched by this review.
