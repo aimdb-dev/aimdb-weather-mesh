@@ -1,27 +1,25 @@
 //! The pyo3 door onto [`StationHandle`], built as a spike.
 //!
 //! Not the wheel: no maturin metadata, no build matrix, no distribution name.
-//! It exists to find out what an FFI layer needs from the station crates
-//! before they reach a registry. Findings are in `README.md`.
+//! Findings are in `README.md`.
 //!
 //! # The GIL is the outermost lock
 //!
-//! [`init_logging`] makes aimdb's runtime thread call into Python to log. From
-//! that point on, every wait this module performs is part of a lock ordering,
-//! and the rule is stronger than "release the GIL before joining a thread":
+//! [`init_logging`] makes aimdb's runtime thread call into Python to log, so
+//! from that point on every wait this module performs is part of a lock
+//! ordering:
 //!
 //! > Never hold the GIL while acquiring anything the runtime thread can block
 //! > on. The GIL must be outermost.
 //!
-//! Concretely: every method that can wait on the runtime thread — including
-//! `close`, which joins it — wraps that wait in [`Python::detach`]. And
-//! `StationHandle::is_closed` reads an atomic rather than the mutex `shutdown`
-//! holds, so a getter called under the GIL can never block behind a shutdown
-//! that is itself waiting for the GIL to be released.
+//! Concretely: every method that can wait on the runtime thread — `close`
+//! included, which joins it — wraps that wait in [`Python::detach`]. And
+//! `StationHandle::is_closed` never takes the mutex `shutdown` holds, so a
+//! getter called under the GIL cannot block behind a shutdown that is itself
+//! waiting for the GIL.
 //!
-//! None of this is visible in `StationHandle`'s signature — Rust has no GIL, so
-//! no type can carry the constraint. It is written down here and exercised by
-//! `python/spike.py`.
+//! Rust has no GIL, so no signature can carry the constraint. It is written
+//! down here and exercised by `python/spike.py`.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -95,17 +93,12 @@ fn to_py_err(err: CoreStationError) -> PyErr {
 ///     station.publish_temperature(21.5)
 /// ```
 ///
-/// `frozen` is what pyo3 offers for a class shared across threads, and this one
-/// is: the supported shape is one reader thread per sensor publishing through a
-/// single seat. It drops the runtime borrow flag a non-frozen pyclass carries,
-/// which is what lets `close()` run while a publish is in flight — a `&mut
-/// self` method cannot win an exclusive borrow from a `&self` method that is
-/// parked in `Python::detach`, and fails with "Already borrowed" instead.
-///
-/// The `Option<StationHandle>` this class used to hold is gone with it:
-/// `StationHandle::shutdown` takes `&self`, is idempotent, and tracks its own
-/// closed flag, so the binding no longer re-solves any of that. The C ABI layer
-/// gets the same three properties for free.
+/// `frozen`, because the supported shape is one reader thread per sensor
+/// publishing through a single seat. It drops the runtime borrow flag a
+/// non-frozen pyclass carries, which is what lets `close()` run while a publish
+/// is in flight — otherwise a `&mut self` method cannot win an exclusive borrow
+/// from a `&self` method parked in `Python::detach`, and fails with "Already
+/// borrowed".
 #[pyclass(frozen, name = "Station", module = "weather_station")]
 struct PyStation {
     inner: StationHandle,
@@ -114,12 +107,10 @@ struct PyStation {
 impl PyStation {
     /// Refuse a call that needs a live runtime, with a message that says so.
     ///
-    /// Best-effort, and deliberately not a lock: `is_closed` reads an atomic,
-    /// so a close racing this check merely means the call fails one layer down
-    /// with aimdb's own "runtime thread has shut down" instead. This is about
-    /// the message, not about correctness — the producers refuse a publish
-    /// after close on their own, because dropping the handle releases the last
-    /// reference to the database their weak ones point at.
+    /// Best-effort, and deliberately not a lock: a close racing this check
+    /// merely means the call fails one layer down with aimdb's own "runtime
+    /// thread has shut down". This is about the message, not correctness — the
+    /// producers refuse a publish after close on their own.
     fn ensure_open(&self) -> PyResult<()> {
         if self.inner.is_closed() {
             return Err(StationError::new_err("this station is closed"));
@@ -136,9 +127,7 @@ impl PyStation {
     /// releases the GIL for the duration.
     ///
     /// Takes `PathBuf` rather than `&str` so `pathlib.Path` and anything else
-    /// implementing `os.PathLike` work, which is what a Python caller reaches
-    /// for. Nothing changes on the Rust side: `StationHandle::open_profile`
-    /// already takes `impl AsRef<Path>`.
+    /// implementing `os.PathLike` work.
     #[staticmethod]
     fn open_profile(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
         let handle = py
@@ -181,10 +170,9 @@ impl PyStation {
 
     /// The slot number this station publishes into.
     ///
-    /// Still answers after `close()`. Deliberate: the slot and the name come
-    /// from the profile, not from the runtime, and a closed station is a thing
-    /// a log line or a traceback still wants to identify. Ask
-    /// [`closed`](Self::closed) for the state.
+    /// Still answers after `close()`: the slot and the name come from the
+    /// profile, not the runtime, and a closed station is still worth naming in
+    /// a traceback. Ask [`closed`](Self::closed) for the state.
     #[getter]
     fn slot(&self) -> u16 {
         self.inner.mesh_slot().slot()
@@ -207,11 +195,11 @@ impl PyStation {
     /// Stop the station and shut its runtime thread down. Idempotent.
     ///
     /// A reading published in the last milliseconds before this does not
-    /// arrive — see `StationHandle::close`.
+    /// necessarily arrive — see `StationHandle::close`.
     ///
     /// `Python::detach` is required here, not optional: the shutdown joins
     /// aimdb's runtime thread, and after [`init_logging`] that thread needs the
-    /// GIL to log. Holding it across the join deadlocks. See the module docs.
+    /// GIL to log. Holding it across the join deadlocks.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| self.inner.shutdown()).map_err(to_py_err)
     }
@@ -271,12 +259,10 @@ impl MessageVisitor {
 
 /// A `tracing` layer that forwards events into Python's `logging`.
 ///
-/// This is the whole reason the module no longer exports `init_tracing`. An
-/// extension module is a library inside somebody else's application, and
-/// process-wide logging is the application's decision. Forwarding gives aimdb's
-/// events *more* control than a hardcoded stderr filter did, not less: levels
-/// become a runtime question a Python operator answers with the tools they
-/// already know.
+/// Why the module exports no `init_tracing`: an extension module is a library
+/// inside somebody else's application, and process-wide logging is that
+/// application's decision. Forwarding makes levels a runtime question a Python
+/// operator answers with the tools they already know.
 struct PyLoggingLayer;
 
 /// `logging` level numbers. `TRACE` has no Python equivalent, so it lands below
@@ -345,9 +331,7 @@ impl<S: Subscriber> Layer<S> for PyLoggingLayer {
 /// `filter` is the cheap gate *below* Python: events it drops never acquire the
 /// GIL at all, which matters because the bridge runs on aimdb's runtime thread.
 /// It takes `tracing`'s `EnvFilter` syntax, defaults to `RUST_LOG`, and falls
-/// back to `info` — the floor the stderr subscriber used to hardcode. Python's
-/// own levels do the fine-grained work above it, so only lower this floor when
-/// you actually want `debug` volume crossing the boundary.
+/// back to `info`. Python's own levels do the fine-grained work above it.
 #[pyfunction]
 #[pyo3(signature = (filter = None))]
 fn init_logging(filter: Option<&str>) -> bool {
