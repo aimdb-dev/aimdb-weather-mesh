@@ -1,35 +1,30 @@
 //! The C ABI door onto [`StationHandle`], built as a spike.
 //!
 //! Not the shipped library: no soname, no CMake package config, no generated
-//! header. It is the pendant of `weather-station-py` — the experiment that finds
-//! out what an FFI layer needs from the station crates before they reach a
-//! registry, run for the language where the boundary is a C ABI rather than an
-//! interpreter. Findings are in `README.md`.
+//! header. The pendant of `weather-station-py`, for the language where the
+//! boundary is a C ABI rather than an interpreter. Findings are in `README.md`.
 //!
 //! # Three rules this layer exists to keep
 //!
 //! **Nothing unwinds across the boundary.** A Rust panic that reaches a C++
 //! frame is undefined behaviour — there is no pyo3 here to turn it into an
 //! exception object. Every `extern "C"` function below wraps its body in
-//! [`catch_unwind`](std::panic::catch_unwind) and reports [`WS_ERR_PANIC`],
-//! and every callback this layer *invokes* is documented `noexcept` on the C++
-//! side for the same reason in the other direction.
+//! [`catch_unwind`](std::panic::catch_unwind) and reports [`WS_ERR_PANIC`], and
+//! every callback this layer *invokes* is documented `noexcept` on the C++ side
+//! for the same reason in the other direction.
 //!
 //! **Every argument is hostile.** C has no `Option`, no lifetime and no UTF-8
 //! guarantee, so a null pointer, a dangling one and a `const char*` that is not
-//! UTF-8 all arrive as ordinary calls. Only the first two of those are
-//! detectable; both are, here.
+//! UTF-8 all arrive as ordinary calls. Only the first and third are detectable;
+//! both are, here.
 //!
 //! **The callback thread is aimdb's runtime thread.** Once [`ws_init_logging`]
 //! is installed, aimdb's runtime thread calls out through a function pointer
-//! into the consuming application. That is the same lock ordering the Python
-//! door found — the GIL rewritten as "whatever lock the callback takes" — and
-//! it is *weaker* here only because C++ has no single process-wide lock to get
-//! wrong. See `README.md`.
+//! into the consuming application — the Python door's lock ordering, rewritten
+//! as "whatever lock the callback takes". See `README.md`.
 
-// The exported types carry their C names. A Rust-side `WsStation` aliased to
-// `ws_station` would put two spellings of one type in front of whoever reads
-// this file next to the header.
+// The exported types carry their C names, so the header and this file spell
+// each type the same way.
 #![allow(non_camel_case_types)]
 
 use std::cell::RefCell;
@@ -48,9 +43,8 @@ use tracing_subscriber::EnvFilter;
 use weather_station::{StationError, StationErrorKind, StationHandle, PROFILE_VERSION};
 
 /// `ws_station` is handed to C as a pointer and used from several threads at
-/// once, so the type behind it has to be `Send + Sync` for the same reason the
-/// pyclass did — with nothing to check it, since C has no bound to violate.
-/// Pinned here because an FFI layer is the only consumer that would notice.
+/// once, so the type behind it has to be `Send + Sync` — with nothing on the C
+/// side to check it. Pinned here instead.
 const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<StationHandle>();
@@ -88,10 +82,9 @@ pub const WS_ABI_VERSION: u32 = 1;
 thread_local! {
     /// Where the message goes when the return value is only a code.
     ///
-    /// Thread-local because the alternative is a global one two publishing
-    /// threads overwrite for each other. Owned by this layer and freed on the
-    /// next failing call from the same thread, which is the contract
-    /// `strerror_r`-style APIs have taught C callers to expect.
+    /// Thread-local because the alternative is a global two publishing threads
+    /// overwrite for each other. Owned by this layer and freed on the next
+    /// failing call from the same thread.
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
 }
 
@@ -117,8 +110,7 @@ fn clear_last_error() {
 ///
 /// Dispatches on `kind()` rather than the variants: `StationError` is
 /// `#[non_exhaustive]`, so matching it here would need a wildcard and a variant
-/// added later would land in it silently — with no compiler to notice, since
-/// the C caller's `switch` has a `default` too.
+/// added later would land in it silently.
 fn report(err: StationError) -> c_int {
     set_last_error(err.to_string());
     match err.kind() {
@@ -132,9 +124,8 @@ fn report(err: StationError) -> c_int {
 /// behaviour.
 ///
 /// The one place this layer can be sure a panic stops. `AssertUnwindSafe` is
-/// honest rather than convenient: a panic mid-call may leave the station in a
-/// state no C caller can reason about, which is why the code says so instead of
-/// pretending the call simply failed.
+/// deliberate: a panic mid-call may leave the station in a state no C caller
+/// can reason about, hence a distinct code rather than an ordinary failure.
 fn guard(body: impl FnOnce() -> c_int) -> c_int {
     match catch_unwind(AssertUnwindSafe(body)) {
         Ok(code) => code,
@@ -173,10 +164,9 @@ unsafe fn cstr(ptr: *const c_char) -> Option<&'static str> {
 
 /// A station's seat in the mesh, behind a pointer.
 ///
-/// `name` is owned here rather than borrowed from the slot: `MeshSlot::name`
-/// returns a `&str`, which is a pointer *and a length*, and C wants a NUL. The
-/// copy is made once at open so [`ws_station_name`] can hand back a pointer
-/// that stays valid until [`ws_station_free`] without allocating per call.
+/// `name` is owned here rather than borrowed from the slot, which returns a
+/// `&str` where C wants a NUL. Copied once at open so [`ws_station_name`] can
+/// hand back a pointer valid until [`ws_station_free`] without allocating.
 pub struct ws_station {
     inner: StationHandle,
     name: CString,
@@ -221,11 +211,8 @@ pub extern "C" fn ws_last_error() -> *const c_char {
 /// `*out` owns a station the caller must eventually pass to
 /// [`ws_station_free`].
 ///
-/// `path` is bytes, and this layer requires them to be UTF-8. That is a real
-/// constraint rather than a formality: Rust's `Path` is UTF-8 on every platform
-/// this mesh targets, while a Windows console hands out UTF-16, so a shipped
-/// library needs a `_w` entry point or a documented encoding rule. Recorded in
-/// `README.md`.
+/// `path` must be UTF-8. A shipped library would need a `_w` entry point or a
+/// documented encoding rule for Windows; recorded in `README.md`.
 ///
 /// # Safety
 /// `path` must be a NUL-terminated string and `out` a writable pointer.
@@ -266,9 +253,9 @@ pub unsafe extern "C" fn ws_station_open_profile(
 
 /// Refuse a call that needs a live runtime, with a message that says so.
 ///
-/// Best-effort, exactly as the Python door's `ensure_open` is: `is_closed`
-/// takes no lock, so a close racing this check merely means the call fails
-/// one layer down with aimdb's own "runtime thread has shut down".
+/// Best-effort, exactly as the Python door's `ensure_open` is: a close racing
+/// this check merely means the call fails one layer down with aimdb's own
+/// "runtime thread has shut down".
 fn ensure_open(station: &ws_station) -> Option<c_int> {
     if station.inner.is_closed() {
         set_last_error("this station is closed");
@@ -321,7 +308,7 @@ publish_fn!(
 /// The slot number this station publishes into, or `0` for a null handle.
 ///
 /// Still answers after a close: the slot comes from the profile, not the
-/// runtime, and a closed station is a thing a log line still wants to identify.
+/// runtime, and a closed station is still worth naming in a log line.
 ///
 /// # Safety
 /// `handle` must be null or a live station pointer.
@@ -351,8 +338,8 @@ pub unsafe extern "C" fn ws_station_name(handle: *const ws_station) -> *const c_
 /// Whether the station has been closed. `true` for a null handle, because a
 /// station that does not exist is not open.
 ///
-/// Reads an atomic, never a lock: this is what a caller asks while holding its
-/// own lock, and the answer must not queue behind a shutdown.
+/// Never takes a lock: this is what a caller asks while holding its own, and
+/// the answer must not queue behind a shutdown.
 ///
 /// # Safety
 /// `handle` must be null or a live station pointer.
@@ -369,8 +356,6 @@ pub unsafe extern "C" fn ws_station_is_closed(handle: *const ws_station) -> bool
 ///
 /// Takes `const ws_station*` on purpose: `StationHandle::shutdown` takes
 /// `&self`, so this needs no exclusive access to a handle a publish is using.
-/// That property is the one the Python door had to have fixed in
-/// `weather-station` — this layer inherits it rather than re-solving it.
 ///
 /// A reading published in the last milliseconds before this does not
 /// necessarily arrive; see `README.md`.
@@ -400,10 +385,8 @@ pub unsafe extern "C" fn ws_station_close(handle: *const ws_station) -> c_int {
 /// sit unguarded in a destructor.
 ///
 /// **Not thread-safe against anything else on the same pointer.** Every other
-/// entry point takes a shared reference and may be called from any thread at
-/// any time; this one consumes the allocation, and C has no borrow checker to
-/// say so. It is the one place the C ABI is weaker than the Python door, where
-/// the interpreter's own reference count decided when the object died.
+/// entry point takes a shared reference and may be called from any thread; this
+/// one consumes the allocation, and C has no borrow checker to say so.
 ///
 /// # Safety
 /// `handle` must be null or a pointer from [`ws_station_open_profile`] that has
@@ -429,11 +412,10 @@ pub unsafe extern "C" fn ws_station_free(handle: *mut ws_station) {
 
 /// Panic on purpose, so the spike can measure what the guard does with it.
 ///
-/// Behind a feature, and never in a shipped build. It exists because "we catch
-/// panics" is a claim, and the spike's job is to turn claims into measurements:
-/// with `panic = "abort"` anywhere in the profile that produced this library,
-/// this function ends the calling C++ process instead of returning
-/// [`WS_ERR_PANIC`], and no amount of `catch_unwind` in the source changes that.
+/// Behind a feature, and never in a shipped build. Worth having because
+/// `panic = "abort"` anywhere in the profile that produced this library makes
+/// the call end the C++ process rather than return [`WS_ERR_PANIC`], and no
+/// amount of `catch_unwind` in the source changes that.
 #[cfg(feature = "spike-probe")]
 #[no_mangle]
 pub extern "C" fn ws_debug_panic() -> c_int {
@@ -469,11 +451,9 @@ pub type ws_log_callback = Option<
 
 /// The installed sink. Written once, read from aimdb's runtime thread.
 ///
-/// A `static mut` behind a `OnceLock` rather than an `AtomicPtr` pair because
-/// there is no way to *uninstall* it: `tracing`'s global subscriber is set for
-/// the life of the process. That is the sharpest new constraint this door
-/// found — see `README.md` — and the type reflects it rather than pretending a
-/// second call could swap the pointer.
+/// A `OnceLock` rather than an `AtomicPtr` pair because there is no way to
+/// *uninstall* it: `tracing`'s global subscriber is set for the life of the
+/// process. See `README.md`.
 struct Sink {
     callback: ws_log_callback,
     user_data: usize,
@@ -523,11 +503,10 @@ fn c_level(level: &Level) -> c_int {
 
 /// A `tracing` layer that forwards events to a C function pointer.
 ///
-/// The pendant of the Python door's `logging` bridge, and it exists for the
-/// same reason: an FFI layer is a library inside somebody else's application,
-/// and where the application's diagnostics go is the application's decision. No
-/// aimdb library installs a subscriber; this one installs a *sink the caller
-/// supplied*.
+/// The pendant of the Python door's `logging` bridge, for the same reason: an
+/// FFI layer is a library inside somebody else's application, and where the
+/// diagnostics go is that application's decision. This installs no subscriber
+/// of its own — only the sink the caller supplied.
 struct CLoggingLayer;
 
 impl<S: Subscriber> Layer<S> for CLoggingLayer {
@@ -570,9 +549,8 @@ impl<S: Subscriber> Layer<S> for CLoggingLayer {
 /// Route the station's reporting — and aimdb's — to `callback`.
 ///
 /// Returns `true` if this call installed the sink, `false` if one was already
-/// in place. Never panics and never aborts: a second call is something a
-/// library-inside-a-library does all the time, and there is no exception type
-/// here to carry the complaint.
+/// in place. Never panics and never aborts: a second call is ordinary, and
+/// there is no exception type here to carry a complaint.
 ///
 /// `filter` takes `tracing`'s `EnvFilter` syntax, defaults to `RUST_LOG` when
 /// `NULL`, and falls back to `info`. It is the cheap gate *below* the callback:

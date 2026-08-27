@@ -18,23 +18,20 @@ use crate::{check_profile_version, AppProfile, BrokerProfile, MeshSlot, StationE
 /// How long [`StationHandle::open`] waits for the graph to start pumping.
 ///
 /// Generous: it covers building the graph and starting both connectors, not a
-/// network round-trip. Exceeding it means the runtime thread is wedged, which
-/// is worth an error rather than a station that publishes into nothing.
+/// network round-trip. Exceeding it means the runtime thread is wedged.
 const GRAPH_START_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long [`StationHandle::shutdown`] waits for the runtime thread to stop.
 ///
-/// The same argument as [`GRAPH_START_TIMEOUT`], applied on the way out: a
-/// wedged runtime thread should make shutdown fail, not hang the caller
-/// forever. `AimDbHandle::detach` has no timeout of its own.
+/// `AimDbHandle::detach` has no timeout of its own, and a wedged runtime thread
+/// should fail the shutdown rather than hang the caller.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A joined mesh station driven from outside the async runtime.
 ///
-/// The record graph runs on a background thread; this is the handle onto it.
-/// Nothing about the mesh — the profile gate, the slot identity, the handshake,
-/// the outbound links — is the caller's to get right, and no async appears in
-/// the API, which is what makes this the type an FFI layer binds.
+/// The record graph runs on a background thread; this is the handle onto it. No
+/// async appears in the API, which is what makes this the type an FFI layer
+/// binds.
 ///
 /// ```no_run
 /// # use std::thread;
@@ -53,17 +50,14 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 /// # }
 /// ```
 ///
-/// The Rust templates use [`Station`](crate::Station) or
-/// [`MeshSlot`](crate::MeshSlot) instead: they are already inside a Tokio
-/// runtime, and this type would make them block a worker thread on a call the
-/// graph could drive itself.
+/// Callers already inside a Tokio runtime want [`Station`](crate::Station) or
+/// [`MeshSlot`](crate::MeshSlot) instead; this type would block a worker thread.
 ///
 /// # Not reentrant into a runtime
 ///
 /// [`open`](Self::open) blocks on the broker pre-flight, so it must not be
 /// called from inside a Tokio runtime. That suits every FFI caller — a Python
-/// or C station owns a plain OS thread — and it is why the async doors exist
-/// for everyone else.
+/// or C station owns a plain OS thread.
 pub struct StationHandle {
     slot: MeshSlot,
     temperature: SyncProducer<TemperatureV2>,
@@ -74,27 +68,23 @@ pub struct StationHandle {
     /// [`is_closed`](Self::is_closed) is what an FFI layer calls while holding
     /// its own interpreter lock. See the lock-ordering note on `shutdown`.
     closed: AtomicBool,
-    /// In a mutex so [`shutdown`](Self::shutdown) can take `&self`: a
-    /// `#[pymethods]` method — and the C ABI's free function after it — never
-    /// receives `self` by value, and a `&mut self` door would collide with a
-    /// publish already in flight.
+    /// In a mutex so [`shutdown`](Self::shutdown) can take `&self`: an FFI door
+    /// never receives `self` by value, and a `&mut self` door would collide
+    /// with a publish already in flight.
     ///
-    /// A publish never contends for this lock: [`SyncProducer`] holds its own
-    /// `Weak<AimDb>` and reaches the database without going through the handle,
-    /// so `shutdown` can never queue behind one.
-    ///
-    /// Dropped last: the producers hold a weak reference to the database this
-    /// handle owns, so it has to outlive them.
+    /// A publish never contends for this lock — [`SyncProducer`] reaches the
+    /// database through its own `Weak<AimDb>` — so `shutdown` cannot queue
+    /// behind one. Dropped last: those weak references point at what this field
+    /// owns.
     db: Mutex<Option<AimDbHandle>>,
 }
 
 /// The mesh tables, parsed on behalf of a caller that has a file rather than a
 /// struct of its own.
 ///
-/// The Rust doors take the tables already parsed, because a station composes
-/// them into a profile naming its own extras. An FFI caller has no such struct,
-/// so this door owns the parse — which is also the only way the profile gate
-/// stays on the mesh's side of the boundary.
+/// The Rust doors take the tables already parsed. An FFI caller has no such
+/// struct, so this door owns the parse — which keeps the profile gate on the
+/// mesh's side of the boundary.
 #[derive(Debug, Deserialize)]
 struct MeshProfile {
     profile_version: u64,
@@ -152,9 +142,9 @@ impl StationHandle {
         // Registered after the slot's records, so it is the last future the
         // runner collects and therefore the last one polled in the first pass:
         // when it fires, both outbound links have subscribed to their buffers.
-        // Without this gate the first reading is lost roughly seven times in
-        // eight — `set()` still returns `Ok`, because a broadcast buffer
-        // accepts a value nobody is reading yet.
+        // Without this gate the first reading is usually lost — `set()` still
+        // returns `Ok`, because a broadcast buffer accepts a value nobody is
+        // reading yet.
         let (started_tx, started_rx) = mpsc::sync_channel::<()>(1);
         builder.on_start(move |_ctx| async move {
             let _ = started_tx.send(());
@@ -202,9 +192,8 @@ impl StationHandle {
     /// [`publish_temperature`](Self::publish_temperature) without blocking:
     /// fails rather than waiting when the outbound buffer is full.
     ///
-    /// The blocking form parks the calling thread, which for a Python caller
-    /// means parking the interpreter unless the binding releases the GIL around
-    /// it. This is the alternative where that does not fit.
+    /// The blocking form parks the calling thread — for a Python caller, the
+    /// interpreter, unless the binding releases the GIL around it.
     pub fn try_publish_temperature(&self, celsius: f32) -> Result<(), StationError> {
         self.temperature
             .try_set(TemperatureV2::new(celsius, unix_millis()?))?;
@@ -227,29 +216,20 @@ impl StationHandle {
 
     /// Stop the station and shut the runtime thread down.
     ///
-    /// Idempotent, and safe to call while another thread is publishing: this
+    /// Idempotent, and safe to call while another thread is publishing: it
     /// takes `&self`, so no exclusive borrow has to be won from a publish
-    /// already in flight. That matters most for the shape that needs it — a
-    /// signal handler closing the station while its sensor threads run.
+    /// already in flight — the shape a signal handler needs.
     ///
     /// `publish_*` returns once the reading is in the buffer, not once it is on
     /// the wire, so a reading published in the last milliseconds before this
-    /// call may not arrive. How often is not fixed, which is the point: over
-    /// eight rounds of eight publish-then-close cycles against a loopback broker,
-    /// two to five of the eight temperatures arrived and none to four of the
-    /// humidities — the second of the two publishes has less time and fares
-    /// worse. That is accepted rather than papered over: stations are
-    /// long-lived and publish on a cadence, so the reading lost to a shutdown
-    /// is one nobody would have read. A station that publishes once and exits
-    /// needs a delivery signal — an ACK topic — not a close that waits, since
-    /// no wait makes delivery certain.
+    /// call may not arrive. That is accepted rather than papered over: stations
+    /// publish on a cadence, and no wait makes delivery certain. A station that
+    /// publishes once and exits needs a delivery signal — an ACK topic.
     ///
     /// After this returns, `publish_*` fails with
-    /// [`SyncError::RuntimeShutdown`](aimdb_sync::SyncError::RuntimeShutdown):
-    /// dropping the handle releases the last `Arc` to the database, so the
-    /// producers' weak references stop upgrading. That is deliberate. Keeping
-    /// the handle alive would let `set()` go on pushing into a buffer nobody
-    /// reads and go on returning `Ok`, which loses readings silently.
+    /// [`SyncError::RuntimeShutdown`](aimdb_sync::SyncError::RuntimeShutdown),
+    /// deliberately: keeping the database alive would let `set()` go on
+    /// returning `Ok` into a buffer nobody reads.
     ///
     /// # Lock ordering
     ///
@@ -257,8 +237,8 @@ impl StationHandle {
     /// `let` below rather than matching on the `take()` directly, which would
     /// extend the guard's lifetime to the end of the match. A caller that
     /// blocks on this mutex while holding a lock the runtime thread needs (an
-    /// FFI layer's interpreter lock, say, when that thread logs through a
-    /// bridge into it) would otherwise deadlock against its own shutdown.
+    /// FFI layer's interpreter lock, when that thread logs through a bridge into
+    /// it) would otherwise deadlock against its own shutdown.
     pub fn shutdown(&self) -> Result<(), StationError> {
         let taken = self
             .db
@@ -281,18 +261,16 @@ impl StationHandle {
     /// True after [`shutdown`](Self::shutdown), and true whenever a publish
     /// could no longer reach the graph — the runtime thread is gone, or this
     /// process `fork`ed since the station was opened and the thread did not
-    /// come across. A child inherits this struct but not the thread, so its
-    /// station is closed in every sense that matters to a caller deciding
-    /// whether to publish.
+    /// come across.
     ///
     /// The second half is asked of the producer rather than tracked here, so it
-    /// is the very check [`publish_temperature`](Self::publish_temperature)
-    /// goes through: this cannot report open while a publish would be refused.
+    /// is the very check a publish goes through: this cannot report open while
+    /// a publish would be refused.
     ///
-    /// Never takes the mutex — the producer is reachable without it, which is
-    /// also why a publish never queues behind a shutdown. So a caller holding
-    /// an interpreter lock can ask this while a shutdown is joining the runtime
-    /// thread without closing the cycle described on `shutdown`.
+    /// Never takes the mutex — the producer is reachable without it — so a
+    /// caller holding an interpreter lock can ask this while a shutdown is
+    /// joining the runtime thread, without closing the cycle described on
+    /// `shutdown`.
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire) || self.temperature.check().is_err()
     }
@@ -309,8 +287,7 @@ impl StationHandle {
 /// Wall-clock milliseconds.
 ///
 /// A reading with no usable timestamp is worse than no reading: the hub keys
-/// its dew-point join off them, so a station whose clock is unset would poison
-/// its slot rather than merely go quiet.
+/// its dew-point join off them.
 fn unix_millis() -> Result<u64, StationError> {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
