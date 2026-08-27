@@ -15,7 +15,7 @@
 //!
 //! Concretely: every method that can wait on the runtime thread — including
 //! `close`, which joins it — wraps that wait in [`Python::detach`]. And
-//! `StationHandle::is_closed` reads an atomic rather than the mutex `shutdown`
+//! `StationHandle::is_closed` never takes the mutex `shutdown`
 //! holds, so a getter called under the GIL can never block behind a shutdown
 //! that is itself waiting for the GIL to be released.
 //!
@@ -114,7 +114,7 @@ struct PyStation {
 impl PyStation {
     /// Refuse a call that needs a live runtime, with a message that says so.
     ///
-    /// Best-effort, and deliberately not a lock: `is_closed` reads an atomic,
+    /// Best-effort, and deliberately not a lock: `is_closed` takes none,
     /// so a close racing this check merely means the call fails one layer down
     /// with aimdb's own "runtime thread has shut down" instead. This is about
     /// the message, not about correctness — the producers refuse a publish

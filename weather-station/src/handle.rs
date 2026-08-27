@@ -74,13 +74,6 @@ pub struct StationHandle {
     /// [`is_closed`](Self::is_closed) is what an FFI layer calls while holding
     /// its own interpreter lock. See the lock-ordering note on `shutdown`.
     closed: AtomicBool,
-    /// The fork generation this station was opened in.
-    ///
-    /// `fork` copies this struct but not the runtime thread, so a child holds a
-    /// station that can never publish again. Recorded here rather than asked of
-    /// `db` because [`is_closed`](Self::is_closed) must not take that mutex —
-    /// see the lock-ordering note on [`shutdown`](Self::shutdown).
-    made_in: aimdb_sync::fork::Generation,
     /// In a mutex so [`shutdown`](Self::shutdown) can take `&self`: a
     /// `#[pymethods]` method — and the C ABI's free function after it — never
     /// receives `self` by value, and a `&mut self` door would collide with a
@@ -182,7 +175,6 @@ impl StationHandle {
             temperature,
             humidity,
             closed: AtomicBool::new(false),
-            made_in: aimdb_sync::fork::generation(),
             db: Mutex::new(Some(db)),
         })
     }
@@ -286,16 +278,23 @@ impl StationHandle {
 
     /// Whether this station can still publish.
     ///
-    /// True after [`shutdown`](Self::shutdown), and true in a process that has
-    /// `fork`ed since the station was opened — a child inherits the struct but
-    /// not the runtime thread, so its station is closed in every sense that
-    /// matters to a caller deciding whether to publish.
+    /// True after [`shutdown`](Self::shutdown), and true whenever a publish
+    /// could no longer reach the graph — the runtime thread is gone, or this
+    /// process `fork`ed since the station was opened and the thread did not
+    /// come across. A child inherits this struct but not the thread, so its
+    /// station is closed in every sense that matters to a caller deciding
+    /// whether to publish.
     ///
-    /// Reads two atomics, never the mutex: a caller holding an interpreter lock
-    /// can ask this while a shutdown is joining the runtime thread without
-    /// closing the cycle described on `shutdown`.
+    /// The second half is asked of the producer rather than tracked here, so it
+    /// is the very check [`publish_temperature`](Self::publish_temperature)
+    /// goes through: this cannot report open while a publish would be refused.
+    ///
+    /// Never takes the mutex — the producer is reachable without it, which is
+    /// also why a publish never queues behind a shutdown. So a caller holding
+    /// an interpreter lock can ask this while a shutdown is joining the runtime
+    /// thread without closing the cycle described on `shutdown`.
     pub fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::Acquire) || aimdb_sync::fork::forked_since(self.made_in)
+        self.closed.load(Ordering::Acquire) || self.temperature.check().is_err()
     }
 
     /// [`shutdown`](Self::shutdown) for a caller that owns the handle by value.

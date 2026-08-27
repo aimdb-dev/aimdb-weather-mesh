@@ -267,7 +267,7 @@ pub unsafe extern "C" fn ws_station_open_profile(
 /// Refuse a call that needs a live runtime, with a message that says so.
 ///
 /// Best-effort, exactly as the Python door's `ensure_open` is: `is_closed`
-/// reads an atomic, so a close racing this check merely means the call fails
+/// takes no lock, so a close racing this check merely means the call fails
 /// one layer down with aimdb's own "runtime thread has shut down".
 fn ensure_open(station: &ws_station) -> Option<c_int> {
     if station.inner.is_closed() {
