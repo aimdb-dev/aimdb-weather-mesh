@@ -1,12 +1,8 @@
 # weather-station-py
 
-The pyo3 door onto `StationHandle`, built as a spike.
-
-Design 008 §5.3 argues the Python wheel should bind an API that already exists
-rather than invent one, and §6 defers the wheel to a later tag. This crate is
-the experiment that answers whether the blocking door survives contact with a
-foreign caller **before** `aimdb-weather-station` and `aimdb-sync` reach a
-registry, where changing either costs a version in two repositories.
+The pyo3 door onto `StationHandle`, and a station template over it. Design 008
+§5.3 argues the Python wheel should bind an API that already exists rather than
+invent one; this is that API, bound.
 
 No maturin metadata, no build matrix, no distribution name — those wait for the
 tag that ships the wheels.
@@ -36,85 +32,30 @@ as safe from a signal handler.
 Needs 3.11 for `tomllib`, or `pip install tomli` on 3.9/3.10, and the module on
 `PYTHONPATH` — which is the wheel's job, once there is a wheel.
 
-## Running the spike
+## What a caller has to know
 
-```
-make spike
-```
+**One station, many threads.** `Station` is `#[pyclass(frozen)]`, so several
+threads may publish through one station at once, and `close()` is safe to call
+while they do — it takes `&self`, is idempotent, and releases the GIL for the
+join. A `SIGINT` handler or a `with` block ending mid-publish is the shape that
+needs all three.
 
-Needs `mosquitto` and `mosquitto-clients` on the path. The script starts a
-broker of its own on a free port, builds the module, loads it the way an
-installed wheel would be imported, and exercises the door against the real
-handshake.
+**Never hold the GIL while acquiring anything the runtime thread can block on.**
+Once `init_logging` is installed, aimdb's runtime thread calls into Python to
+log, which creates a lock ordering where none existed: the GIL must be
+outermost. So `close()` wraps the join in `Python::detach`, and `closed` reads
+an atomic rather than the mutex `shutdown` holds — a getter that waited on that
+mutex under the GIL would deadlock against a shutdown waiting for the GIL. Rust
+has no GIL, so no signature carries this; it is written down in both crates.
 
-## What it found
-
-### Two things the crates had to change
-
-**`StationHandle::close(self)` could not be bound, and the workaround was
-broken.** A `#[pymethods]` method never receives `self` by value, so the
-pyclass held `Option<StationHandle>` and `close()` took the handle out of it —
-which made `close` a `&mut self` method. pyo3 tracks that with a runtime borrow
-flag, and `Python::detach` releases the GIL but *not* the flag. So while any
-thread sat in a blocking publish, `close()` could not get its exclusive borrow:
-
-```
-RuntimeError: Already borrowed
-```
-
-The flag is checked before the method body runs, so `inner.take()` never
-happened either: the call failed *and* the station stayed open, still holding
-its slot. Measured at 200/200 failed closes with one thread publishing in a
-loop. Two threads publishing at once are both `&self` and share the borrow
-fine — 200 publishes across 4 threads, all of them landed — so this was only
-ever the shutdown path: a `SIGINT` handler, or a `with` block ending, while
-sensor threads run.
-
-Fixed in `weather-station`, not in the binding. `StationHandle` now has
-`shutdown(&self)`, which is idempotent and safe to call during a publish, plus
-`is_closed()`; `close(self)` delegates to it. The `db` field moved into a
-`Mutex<Option<AimDbHandle>>`, and a publish never contends for that lock
-because `SyncProducer` holds its own `Weak<AimDb>` and never goes through the
-handle. The pyclass is `#[pyclass(frozen)]`, which drops the borrow flag
-entirely, and the `Option`, the `handle()` helper and the idempotency bookkeeping
-are all gone from the binding. **The C ABI layer inherits the fix** rather than
-solving the same three problems again, which is what the first version of this
-document predicted it would have to do.
-
-**The module installed a process-wide logging subscriber.** `init_tracing`
-called `tracing_subscriber::fmt().init()`, which writes to stderr behind
-Python's back and *panics* if a subscriber already exists. That panic crosses
-pyo3 as `pyo3_runtime.PanicException`, a `BaseException` — so `except Exception`
-around logging setup does not catch it, and a Rust backtrace lands on stderr.
-Python code configures logging twice all the time.
-
-An extension module is a library inside somebody else's application, and
-process-wide logging is the application's decision. The rest of the stack
-already gets this right: `aimdb-core`'s `log_*` macros are a feature-gated
-facade over `tracing`, and no aimdb library installs a subscriber. Only this
-module broke the rule.
-
-`init_tracing` is gone from the module, replaced by `init_logging()`: a
-`log::Log` that forwards events into Python's `logging`. It returns
-`True`/`False` rather than panicking. The Rust station binaries keep
-`weather_station::init_tracing` — they *are* the application — and it now uses
-`try_init()`, so a second call is a no-op rather than a panic across an FFI
-boundary.
-
-The first version of this fix left half the problem standing. Reaching a
-`tracing::Layer` at all meant installing the process's global subscriber, so
-`init_logging` committed the very trespass that removing `init_tracing` was
-meant to end — one layer further down, where it was harder to see. Design 050
-gave `aimdb-core`'s facade a second destination, so this bridge is now an
-ordinary `log::Log` this module owns: nothing global is installed on the
-application's behalf beyond the one logger `log` exists to hold, and
-`tracing-subscriber` is out of the extension's dependency graph entirely.
-`log::set_boxed_logger` is also what makes the `True`/`False` honest — the
-first-wins decision is made once, in `log`, for this door and the C one alike.
-
-This gives aimdb's events **more** control than before, not less. The old
-filter hardcoded `"…,aimdb_core=info,aimdb=info"` at build time; now each
-subsystem is addressable at runtime from Python:
+**`init_logging()` installs a `log::Log`, not a subscriber.** An extension
+module is a library inside somebody else's application, and process-wide logging
+is the application's decision, so nothing global is installed on your behalf
+beyond the one logger `log` exists to hold. It returns `True` if this call
+installed the bridge and `False` if one was already there — `log::set_boxed_logger`
+makes that decision once, in Rust, for this door and the C one alike. Events
+arrive under Python levels and Rust module paths, with `::` translated to `.` so
+`getLogger("aimdb_core")` is a parent of what aimdb emits:
 
 ```python
 import logging, weather_station
@@ -123,104 +64,32 @@ weather_station.init_logging()
 logging.getLogger("aimdb_core").setLevel(logging.WARNING)  # station INFO stays
 ```
 
-One detail that is easy to get wrong: event targets are Rust module paths
-(`aimdb_core::builder`), and `logging` splits its hierarchy on `.`. The bridge
-translates `::` to `.`, without which `getLogger("aimdb_core")` would not be a
-parent of anything aimdb emits and setting a level on it would silently do
-nothing. Events observed under `weather_station.broker`, `weather_station.slot`,
-`aimdb_core.builder` and `aimdb_core.session.pump`.
+The optional `filter` is only the floor that keeps unwanted events from
+acquiring the GIL: `level` and `target=level`, comma-separated, longest matching
+prefix first, in either spelling — `info,aimdb_core.builder=debug` and
+`aimdb_core::builder=debug` both work. The fine-grained work is Python's
+`logging` levels above it.
 
-**`init_logging`'s `filter` is coarser than it was.** It took `tracing`'s
-`EnvFilter` syntax, which came free with `tracing-subscriber` and went with it;
-span, field and regex directives are gone. What remains is `level` and
-`target=level`, comma-separated, longest matching prefix first, in either
-spelling — `info,aimdb_core.builder=debug` and `aimdb_core::builder=debug` both
-work. This costs less here than at the C door: `filter` is only the floor that
-keeps unwanted events from acquiring the GIL, and the fine-grained work was
-always Python's `logging` levels above it, which are untouched.
+**Errors are classified by what you can do about them.** `ProfileError` — fix
+the file. `BrokerError` — fix the deployment. `StationError` — the base, and
+what to catch when you cannot distinguish. The match that produces the
+classification is exhaustive inside the crate that owns the error enum, so a
+variant added later is a compile error there rather than a silent
+reclassification at the boundary.
 
-### The rule the wheel has to carry
-
-Once the bridge exists, aimdb's runtime thread calls into Python to log. That
-creates a lock ordering where none existed, and it is stronger than "release
-the GIL before joining a thread":
-
-> **Never hold the GIL while acquiring anything the runtime thread can block
-> on.** The GIL must be outermost.
-
-So `close()` wraps the join in `Python::detach`, and `StationHandle::is_closed`
-reads an `AtomicBool` rather than the mutex `shutdown` holds — a getter that
-waited on that mutex under the GIL would deadlock against a shutdown waiting
-for the GIL to be released. Inside `shutdown`, the guard is dropped with a
-`let` before the join for the same reason: writing the same code as a `match`
-on the `take()` would extend the guard to the end of the match, because Rust
-extends scrutinee temporaries.
-
-None of this is visible in `StationHandle`'s signature — Rust has no GIL, so no
-type can carry the constraint. It is written down in both crates and exercised
-by the spike's "lock ordering" round, which calls every entry point under a
-watchdog while aimdb's runtime thread is logging.
-
-### Accepted, not fixed
+**`open_profile` takes anything path-like.** `str`, `pathlib.Path`, any
+`os.PathLike`.
 
 **`close()` is not a flush.** `publish_*` hands the value to the slot's buffer
-and returns, while the outbound link writes it on the runtime thread, and
-`AimDbHandle::detach` signals shutdown and joins without draining. How much
-gets lost varies, which is the point: over eight rounds of eight
-publish-then-close cycles against a loopback broker with no TLS, two to five of
-the eight temperatures arrived and none to four of the humidities — the second
-publish has less time and fares worse. A 20 ms grace closes the window in
-practice; 8/8 arrive with one.
+and returns; the outbound link writes it on the runtime thread. A reading
+published immediately before a close may not reach the broker. Stations publish
+on a cadence, so what is lost is a reading nobody would have read; a station
+that publishes once and exits wants a delivery signal, which does not exist yet.
 
-Stations are long-lived and publish on a cadence, so the reading lost to a
-shutdown is one nobody would have read. A grace period inside `close()` was
-implemented and then reverted: it would tax every close to improve the odds for
-a shape the mesh does not have, and no wait makes delivery certain — nothing
-between the buffer and the socket reports what was written. The connector
-already publishes at QoS 1, so if publish-once-and-exit stations ever appear,
-the answer is a delivery signal over a standard MQTT ACK topic, not a shutdown
-that waits. `StationHandle::close` records this.
-
-### Two things the binding got wrong on its own
-
-**The base exception was really called `StationErrorPy`.** `create_exception!`
-takes the Python class name from the Rust identifier, and that had to avoid
-clashing with the imported `StationError`, so tracebacks named
-`weather_station.StationErrorPy` — an attribute that is not on the module and
-cannot be imported. Fixed by renaming the *Rust* import
-(`StationError as CoreStationError`) and leaving the good name to the macro.
-The spike now checks each exception's `__name__` against its module attribute.
-
-**`open_profile` rejected a `pathlib.Path`.** The parameter was `&str`, so
-`Path("station.toml")` raised `TypeError: 'PosixPath' object is not an instance
-of 'str'` — and the spike worked around it without noticing, writing
-`str(path)` at every call. It takes `std::path::PathBuf` now, which accepts
-`str`, `Path` and anything `os.PathLike`. Nothing changed on the Rust side:
-`StationHandle::open_profile` already took `impl AsRef<Path>`.
-
-### `StationError` was `#[non_exhaustive]` with nothing to match on
-
-A foreign mapping needed a wildcard arm, so a variant added later would land in
-it silently and a caller catching `BrokerError` around a join would quietly stop
-catching broker failures. Fixed in `weather-station`: `StationErrorKind`
-classifies by what the caller can do — fix the file, fix the deployment, or
-neither — and the match that produces it is exhaustive inside the crate that
-owns the enum.
-
-### The rest holds
-
-| Claim | Result |
-|---|---|
-| `StationHandle` is `Send + Sync`, which `#[pyclass]` requires | holds — pinned by a compile-time assertion in `src/lib.rs` |
-| Blocking calls can release the GIL | holds — a Python thread ticked 476 times while a join blocked 5 s on an unresponsive broker |
-| The startup gate holds for a foreign caller | holds — 8/8 first readings arrive |
-| The error enum reaches Python as something actionable | holds, via `kind()` |
-| One interpreter can hold several stations | holds — slots 17 and 18 publish independently |
-| A worker thread can publish through a handle another thread opened | holds |
-| Several threads can publish through one handle *at once* | holds — 200 publishes on 4 threads, none refused |
-| Shutting down while sensor threads publish | holds *after* the fix above — 11 ms, no reading refused for any reason but "closed" |
-| Every entry point is deadlock-free while the runtime thread logs | holds — each returns in ≤ 11 ms under a watchdog |
-| The payload on the wire is the versioned contract shape | holds — `{"schema_version":2,"celsius":…}` on `station/17/temperature` |
+**A `fork()`ed child is refused, not silently accepted.** The child inherits a
+station whose graph nobody pumps, so `aimdb-sync` stamps a fork generation:
+`closed` reports `True` and a publish raises rather than returning into a buffer
+nobody drains.
 
 ## Notes for whoever writes the wheel
 

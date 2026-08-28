@@ -1,4 +1,4 @@
-//! The C ABI door onto [`StationHandle`], built as a spike.
+//! The C ABI door onto [`StationHandle`].
 //!
 //! Not the shipped library: no soname, no CMake package config, no generated
 //! header. The pendant of `weather-station-py`, for the language where the
@@ -411,18 +411,6 @@ pub unsafe extern "C" fn ws_station_free(handle: *mut ws_station) {
         let _ = station.inner.shutdown();
         drop(station);
     }));
-}
-
-/// Panic on purpose, so the spike can measure what the guard does with it.
-///
-/// Behind a feature, and never in a shipped build. Worth having because
-/// `panic = "abort"` anywhere in the profile that produced this library makes
-/// the call end the C++ process rather than return [`WS_ERR_PANIC`], and no
-/// amount of `catch_unwind` in the source changes that.
-#[cfg(feature = "spike-probe")]
-#[no_mangle]
-pub extern "C" fn ws_debug_panic() -> c_int {
-    guard(|| panic!("a panic raised on purpose by ws_debug_panic"))
 }
 
 // ---------------------------------------------------------------------------

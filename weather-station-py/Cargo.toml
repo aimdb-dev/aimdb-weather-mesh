@@ -2,11 +2,10 @@
 name = "weather-station-py"
 version = "0.1.0"
 edition = "2021"
-description = "Spike: the pyo3 door onto StationHandle, built to find out what an FFI layer needs before the crates are published"
+description = "The pyo3 door onto StationHandle, and a station template over it"
 license = "Apache-2.0"
-# Never published. This is the experiment §6 runs before the release train, not
-# the wheel — the wheel is a later tag, and it will carry maturin metadata this
-# crate deliberately does not.
+# Never published. The wheel is a later tag, and it will carry the maturin
+# metadata this crate does not have yet — see README.md.
 publish = false
 
 [lib]

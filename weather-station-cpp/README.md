@@ -1,14 +1,10 @@
 # weather-station-cpp
 
-The C ABI door onto `StationHandle`, built as a spike — and the C++ layer over
-it, which is a header rather than a library for reasons this document is mostly
-about.
-
-The pendant of `weather-station-py`. That crate asked whether the blocking door
-survives contact with a foreign caller before `aimdb-weather-station` and
-`aimdb-sync` reach a registry; this one asks the same question for the language
-where the boundary is a C ABI, no interpreter mediates, and the compiler stops
-helping at the `extern "C"`.
+The C ABI door onto `StationHandle`, the C++ layer over it — a header rather
+than a library, for reasons this document is mostly about — and a station
+template on top of both. The pendant of `weather-station-py`, for the language
+where no interpreter mediates and the compiler stops helping at the
+`extern "C"`.
 
 No soname, no CMake package config, no generated header — those wait for the tag
 that ships the library.
@@ -36,16 +32,6 @@ then Vienna; half a pair is an error. SIGINT and SIGTERM set a
 `volatile sig_atomic_t` and nothing else: closing from inside a handler would
 run aimdb's shutdown on the signal stack.
 
-## Running the spike
-
-```
-make spike-cpp
-```
-
-Needs `mosquitto`, `mosquitto-clients` and a C++17 compiler. The spike starts a
-broker of its own on a free port, builds the cdylib, links against it the way a
-consuming build would, and exercises the door against the real handshake.
-
 ## The shape, and why it is this shape
 
 Rust cannot export C++. No class, no `std::string`, no `std::function` survives
@@ -69,192 +55,68 @@ internals do not leak into the consumer's dynamic namespace. The `staticlib`
 does: 47,878 defined text symbols, and a link line that fails without
 `-lssl -lcrypto -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc`.
 
-## What it found
+## What a caller has to know
 
-### The Python door's fixes carried, and one of them is load-bearing here
-
-`StationHandle::shutdown(&self)` — idempotent, safe during a publish — was fixed
-in `weather-station` because a `#[pymethods]` method never receives `self` by
-value. This layer inherits it, exactly as the Python README predicted the C ABI
-layer would, and the inheritance shows in the signature: `ws_station_close`
-takes `const ws_station*`, and the C++ `Station::close()` is a `const` method.
-A `close` that needed exclusive access would have forced either a mutex in this
-layer or a documented "stop your sensor threads first", and the shape that needs
-it — a `SIGINT` handler closing a station whose sensor threads are running —
-would have been the one it broke. Measured: `close()` returns in 10 ms with four
-threads publishing, and no thread saw anything but `StationError`.
-
-`is_closed()` reading an atomic rather than the mutex `shutdown` holds carried
-too, and it matters here for a *different* reason than it did in Python. There
-the hazard was the GIL: a getter that waited on that mutex under the GIL would
-deadlock against a shutdown waiting for the GIL. Here there is no GIL, so the
-same call is merely reentrant — and the spike makes it reentrant on purpose, by
-installing a log sink that calls `ws_station_is_closed` and `ws_station_slot`
-from inside the logging path, i.e. on aimdb's runtime thread, including while
-that station's own shutdown is in flight. Both return; `close()` completes in
-10 ms.
-
-The classification `StationError::kind()` carried as well, and it is what keeps
-`#[non_exhaustive]` from being a trap twice over: a C caller's `switch` has a
-`default` arm too, so a variant added later would land in it just as silently as
-a Rust wildcard would.
-
-### What C adds that Python did not
-
-**Nothing may unwind across the boundary.** pyo3 catches panics and raises
-`PanicException`. There is no equivalent here — a Rust panic reaching a C++
-frame is undefined behaviour — so every entry point wraps its body in
-`catch_unwind` and reports `WS_ERR_PANIC` (measured, with a feature-gated
-`ws_debug_panic`), and the C++ header's log trampoline is `noexcept` and catches
-everything for the same reason in the other direction. A sink that throws on
-every event is survivable; the spike runs one.
-
-Two things that guard cannot do, and both are requirements on somebody else:
-
-- It is compiled out by `panic = "abort"`. A consumer's profile silently turns
-  every one of those catches into an abort of the whole C++ process.
-- It does not stop the message. A panic writes its text and backtrace to
-  **fd 2** — measured at 1,732 bytes — past the installed sink, because Rust's
-  panic hook is process-global. Installing a hook here would be the same
-  trespass `init_tracing` was in the Python module. So the only real fix is
-  upstream: **the library must not panic.**
+**Nothing may unwind across the boundary.** A Rust panic reaching a C++ frame is
+undefined behaviour, so every entry point wraps its body in `catch_unwind` and
+reports `WS_ERR_PANIC`; the header's log trampoline is `noexcept` and catches
+everything for the same reason in the other direction. A sink that throws is
+survivable. Two things that guard cannot do, and both are yours rather than this
+layer's: it is compiled out by `panic = "abort"` anywhere in your profile, which
+turns every catch into an abort of the whole process, and it does not stop the
+message — a panic writes its text and backtrace to **fd 2**, past your installed
+sink, because Rust's panic hook is process-global and no library here may
+install one.
 
 **Every argument is hostile.** No `Option`, no lifetime, no UTF-8 guarantee.
-`NULL` arrives at every entry point, and a `const char*` that is not UTF-8
-arrives at `ws_station_open_profile` — which cannot be represented as a Rust
-`Path` at all, so it is refused rather than mangled. This is the pendant of the
-Python door's `PathBuf` fix (`pathlib.Path` used to raise `TypeError`), and it
-resolves in the opposite direction: Python's fix widened what the door accepts,
-and C's answer has to narrow it, because there is nothing in a `const char*`
-that says what encoding it is. On Windows, where the console hands out UTF-16, a
-shipped library needs a `_w` entry point or a documented encoding rule.
+`NULL` is handled at every entry point. A `const char*` path that is not UTF-8
+cannot be represented as a Rust `Path` at all, so `ws_station_open_profile`
+refuses it rather than mangling it — on Windows, where the console hands out
+UTF-16, a shipped library needs a `_w` entry point or a documented encoding
+rule. The C++ header's `std::filesystem::path` constructor converts with
+`.string()`, which is where a non-UTF-8 path is lost.
 
-**Ownership has to be prose.** `ws_station_free` is the one entry point that is
-not thread-safe against the others, because it destroys what they share. In
-Python the interpreter's reference count made this a non-question. The C++
-header turns the prose back into a compile error — `Station` is move-only, so
-two owners cannot exist — but the C ABI underneath cannot, and a caller that
-uses it directly is on its own.
+**Ownership is prose in C, a compile error in C++.** `ws_station_free` is the one
+entry point that is not thread-safe against the others, because it destroys what
+they share. The header makes that a type rule — `Station` is move-only, so two
+owners cannot exist — but the C ABI underneath cannot, and a caller using it
+directly is on its own.
 
 **A destructor is a shutdown.** `~Station` calls `ws_station_free`, which joins
-aimdb's runtime thread. Two things had to hold and do: a station held in a
-static and destroyed after `main` returns shuts down cleanly, and a destructor
-never lets an exception out (it would `std::terminate` during unwinding).
+aimdb's runtime thread. A station held in a static and destroyed after `main`
+returns shuts down cleanly, and the destructor never lets an exception out — it
+would `std::terminate` during unwinding.
 
-### The one thing that was broken, and is now fixed
+**`close()` is not a flush.** `publish_*` hands the value to the slot's buffer
+and returns; the outbound link writes it on the runtime thread. A reading
+published immediately before a close may not reach the broker. Stations publish
+on a cadence, so what is lost is a reading nobody would have read; a station
+that publishes once and exits wants a delivery signal, which does not exist yet.
 
-**After `fork()`, the child used to be told the station was open, its publish
-returned success, and the reading was dropped.**
+**Filtering is coarser than `tracing`'s.** `level` and `target=level`,
+comma-separated, longest matching prefix first: `info,aimdb_core::builder=debug`.
+No span, field or regex directives — a `cdylib` in somebody else's process
+should not be installing that process's global subscriber, so
+`tracing-subscriber` is not in this build. A Rust consumer keeps `EnvFilter`.
 
-`fork` copies the address space but not the threads, so the child inherited a
-`ws_station` whose graph nobody pumps. Measured against a live broker: the
-parent's readings before and after the fork both arrived; the child's never did.
-`is_closed()` reported open. `publish_temperature` returned `WS_OK`.
-
-That was the failure the graph-start gate exists to prevent — `set()` returning
-`Ok` into a buffer nobody reads — reappearing on the other side of a `fork`, and
-it mattered more here than it would in Python: a daemon that double-forks, or a
-supervisor that forks per job, is an ordinary C++ shape.
-
-Running a *destructor* in the child found a second failure the first probe hid:
-joining a `JoinHandle` for a thread that does not exist in this process panics
-inside `std` with "threads should not terminate unexpectedly", putting a Rust
-backtrace on stderr from inside `~Station`.
-
-Both are fixed upstream, where they belonged. `aimdb-sync` now stamps a fork
-generation — maintained by a `pthread_atfork` handler, so the check on the
-publish path is a relaxed atomic load rather than a `getpid` that would cost
-more than twice the publish it guards — and refuses a stale handle, producer or
-consumer with `SyncError::ForkedChild`. `detach` and `Drop` release the join
-handle instead of joining. `StationHandle::is_closed` reports closed in a child.
-The round now reads:
-
-```
-  ok    the parent keeps publishing across the fork
-  ok    a forked child is told the station is closed
-  ok    a forked child's publish is refused, not silently dropped
-  ok    no phantom reading reached the broker
-```
-
-The fix could not live in this layer: both mechanisms are process-global, and
-an FFI shim registering a `pthread_atfork` handler on behalf of an application
-that did not ask is the same trespass as installing a logging subscriber.
-
-### The two defects in the header, deleted rather than fixed
-
-**A second `init_logging` replaced the first caller's sink and returned `false`
-to say it had not — and wrote the pointer it replaced while aimdb's runtime
-thread was reading it.**
-
-Both came from one place: a `tracing::Layer` has nowhere to put a `void
-*user_data`, so the header kept a `detail::SinkHolder` static beside the
-callback. It was assigned on every call, before asking whether the install would
-be accepted (last-wins over a C layer that was first-wins), and assigned from
-the calling thread while the trampoline read it from aimdb's runtime thread.
-
-Design 050 gave the sink below the boundary somewhere to keep a context pointer,
-so the static has no reason to exist. `ws_init_logging` forwards to
-`log::set_boxed_logger`, which makes the first-wins decision once and in Rust
-for every binding; the header allocates the `(sink, user_data)` pair, hands it
-over as `user_data`, and releases it if the install is refused. There is no
-static left to race on and no second opinion about who won.
-
-Measured, by running the current spike against the previous header: **86,890
-events went to the sink that had just been told it was not installed**, and the
-first caller's sink stopped receiving entirely — which took the reentrancy and
-target-routing rounds down with it. Against the current header, zero.
-
-### Accepted, not fixed
-
-**`close()` is not a flush**, exactly as in the Python door: `publish_*` hands
-the value to the slot's buffer and returns, while the outbound link writes it on
-the runtime thread. In this run, 5/8 temperatures and 2/8 humidities arrived
-from eight publish-then-close cycles with no grace period; with a 20 ms grace,
-8/8 of each. The numbers move between runs and machines — the same round in the
-Python spike reported 8/8 with no grace on this host — which is the argument for
-an ACK topic rather than a shutdown that waits, not against it.
-
-**Per-target filtering is coarser than it was, deliberately.** `filter` used to
-take `tracing`'s `EnvFilter` syntax, which came free with `tracing-subscriber`.
-Design 050 took `tracing-subscriber` out of this library — a `cdylib` in
-somebody else's process should not be installing that process's global
-subscriber — and with it went span filters, field filters and regex directives.
-What remains is `level` and `target=level`, comma-separated, longest matching
-prefix first: `info,aimdb_core::builder=debug`. A real regression in
-convenience, and the trade this door was built to make; a Rust consumer keeps
-`EnvFilter` exactly as before.
-
-**The log target reaches C unmodified.** The Python bridge rewrites `::` to `.`
-because `logging` splits its hierarchy there and `getLogger("aimdb_core")` would
-otherwise be a parent of nothing. C has no hierarchy, so a C caller gets
-`aimdb_core::builder` and a `strncmp`. Nothing to fix; worth knowing that the
-two doors deliberately differ here.
+**The log target reaches C unmodified.** `aimdb_core::builder`, `::` intact, for
+a `strncmp`. The Python bridge rewrites `::` to `.` because `logging` splits its
+hierarchy there; C has no hierarchy, so the two doors deliberately differ.
 
 **The sink cannot be uninstalled.** `log::set_logger` is once per process by
-construction, so `callback` and `user_data` must outlive it — which in
-practice means the library must not be `dlclose`d once `ws_init_logging` has run.
-On glibc it currently cannot be: `dlclose` returns 0 and the library stays
-mapped, because Rust's thread-locals give it TLS with destructors. That is a
-platform accident this document is recording, not a property to rely on.
+construction, so `callback` and `user_data` must outlive it — which means not
+`dlclose`ing this library once `ws_init_logging` has run. On glibc it currently
+cannot be unloaded anyway, because Rust's thread-locals give it TLS with
+destructors, but that is a platform accident rather than a property to rely on.
 
-### The rest holds
-
-| Claim | Result |
-|---|---|
-| `StationHandle` is `Send + Sync`, which a shared `const ws_station*` requires | holds — pinned by a compile-time assertion in `src/lib.rs` |
-| A blocking call parks its own thread and no other | holds — a second thread ticked 492 times while an open blocked 5 s on an unresponsive broker |
-| The startup gate holds for a foreign caller | holds — 8/8 first readings arrive |
-| The error enum reaches C++ as something actionable | holds, via `kind()` → `ws_status` → the exception hierarchy |
-| One process can hold several stations | holds — slots 17 and 18 publish independently |
-| A worker thread can publish through a station another thread opened | holds |
-| Several threads can publish through one station *at once* | holds — 200 publishes on 4 threads, none refused |
-| Shutting down while sensor threads publish | holds — 10 ms, no reading refused for any reason but "closed" |
-| Every entry point is deadlock-free while the runtime thread logs | holds — each returns in ≤ 12 ms under a watchdog |
-| The sink is reentrant into the getters, from the runtime thread | holds — including during that station's own shutdown |
-| A sink that throws does not unwind into Rust | holds — the trampoline catches |
-| The payload on the wire is the versioned contract shape | holds — `{"schema_version":2,"celsius":…}` on `station/17/temperature` |
-| The cdylib exports only the ABI | holds — 14 dynamic symbols, all `ws_*` |
-| A pure C consumer can use the C header | holds |
+**A `fork()`ed child is refused, not silently accepted.** `fork` copies the
+address space but not the threads, so a child inherits a station whose graph
+nobody pumps. `aimdb-sync` stamps a fork generation and refuses a stale handle,
+`is_closed` reports closed, and a publish fails rather than returning `WS_OK`
+into a buffer nobody drains. That fix could not live in this layer: the
+mechanism is process-global, and an FFI shim registering a `pthread_atfork`
+handler on behalf of an application that did not ask is the same trespass as
+installing a logging subscriber.
 
 ## Notes for whoever ships the library
 

@@ -5,7 +5,7 @@
 # the same commands. Adding a feature to a crate means adding its combination
 # here — that is the only place the matrix lives.
 
-.PHONY: help build test fmt fmt-check clippy test-embedded lockfile check spike spike-cpp clean clean-embedded \
+.PHONY: help build test fmt fmt-check clippy test-embedded lockfile check clean clean-embedded \
 	ts-bindings ts-bindings-check wasm-check wasm js station-py station-cpp
 .DEFAULT_GOAL := help
 
@@ -64,8 +64,6 @@ help:
 	@printf "  $(YELLOW)FFI stations:$(NC)\n"
 	@printf "    station-py     Run the Python station (CONFIG=station.local.toml)\n"
 	@printf "    station-cpp    Run the C++ station (CONFIG=station.local.toml, needs libcurl)\n"
-	@printf "    spike          Exercise the pyo3 door against a local broker (needs mosquitto)\n"
-	@printf "    spike-cpp      Exercise the C ABI door the same way (needs mosquitto and a C++17 compiler)\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Browser client:$(NC)\n"
 	@printf "    wasm           Build the npm package with wasm-pack (needs wasm-pack)\n"
@@ -106,40 +104,9 @@ station-cpp:
 	@printf "$(GREEN)Starting the station ($(CONFIG))...$(NC)\n"
 	LD_LIBRARY_PATH=$(FFI_TARGET_DIR) $(FFI_TARGET_DIR)/station-cpp --config $(CONFIG)
 
-## Exercise the pyo3 door — see weather-station-py/README.md
-##
-## Deliberately outside `check`: it needs mosquitto and an interpreter, and it
-## is a spike rather than a gate. It reports known findings without failing on
-## them, so a finding that stops reproducing is visible in the output.
-spike:
-	@printf "$(GREEN)Building the Python module...$(NC)\n"
-	cargo build -p weather-station-py
-	@printf "$(GREEN)Running the spike...$(NC)\n"
-	python3 weather-station-py/python/spike.py
-
-## Exercise the C ABI door — see weather-station-cpp/README.md
-##
-## Outside `check` for the same reasons `spike` is, plus one more: it links a
-## C++ program against the cdylib, so it needs a C++17 compiler as well as
-## mosquitto.
-##
-## `--features spike-probe` adds one symbol, `ws_debug_panic`, so the panic
-## round can measure the guard rather than assert it. A shipped library must
-## not have it, which is why it is a feature rather than a `#[no_mangle]` fn.
 CXX ?= g++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -g -pthread
 FFI_TARGET_DIR := $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),target)/debug
-
-spike-cpp:
-	@printf "$(GREEN)Building the C ABI library...$(NC)\n"
-	cargo build -p weather-station-cpp --features spike-probe
-	@printf "$(GREEN)Building the C++ spike...$(NC)\n"
-	$(CXX) $(CXXFLAGS) -DWS_SPIKE_PROBE -Iweather-station-cpp/include \
-		weather-station-cpp/cpp/spike.cpp \
-		-L$(FFI_TARGET_DIR) -lweather_station_ffi \
-		-o $(FFI_TARGET_DIR)/spike-cpp
-	@printf "$(GREEN)Running the spike...$(NC)\n"
-	LD_LIBRARY_PATH=$(FFI_TARGET_DIR) $(FFI_TARGET_DIR)/spike-cpp
 
 ## Build the workspace
 build:

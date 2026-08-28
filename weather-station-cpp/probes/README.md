@@ -1,8 +1,7 @@
 # Probes
 
-Standalone experiments that settle a design question the spike itself cannot
-ask, because they need aimdb's API directly rather than through the station
-crates.
+Standalone experiments that settle a design question the doors cannot ask,
+because they need aimdb's API directly rather than through the station crates.
 
 Each is its own cargo workspace (`[workspace]` in its manifest) so it does not
 join the mesh workspace, and reaches the aimdb crates by the same relative path

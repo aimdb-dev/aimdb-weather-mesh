@@ -2,31 +2,20 @@
 name = "weather-station-cpp"
 version = "0.1.0"
 edition = "2021"
-description = "Spike: the C ABI door onto StationHandle, built to find out what a C/C++ layer needs before the crates are published"
+description = "The C ABI door onto StationHandle, the header-only C++ layer over it, and a station template"
 license = "Apache-2.0"
-# Never published. The pendant of `weather-station-py`: the experiment that runs
-# before the release train, not the shipped library. A shipped library carries a
-# soname, a CMake package config and a generated header this crate deliberately
-# does not.
+# Never published. A shipped library carries a soname, a CMake package config
+# and a generated header this crate does not have yet — see README.md.
 publish = false
 
 [lib]
 # The C symbol prefix is `ws_`; the crate is named for the workspace.
 name = "weather_station_ffi"
-# Both, and deliberately: the two link modes fail differently, and the spike
-# links the shared one the way a consuming build would (`-L … -lweather_station_ffi`,
-# resolved at run time through `LD_LIBRARY_PATH`). `staticlib` is here so the
-# build proves it *can* be produced — a consumer that static-links needs
-# `cargo rustc -- --print native-static-libs` to know what else to pass, which
-# is a packaging finding rather than a code one.
+# Both, and deliberately: the two link modes fail differently. The station links
+# the shared one the way a consuming build would; `staticlib` is here so the
+# build proves it can be produced — a consumer that static-links needs
+# `cargo rustc -- --print native-static-libs` to know what else to pass.
 crate-type = ["cdylib", "staticlib"]
-
-[features]
-# One extra symbol, `ws_debug_panic`, so the spike can prove the panic guard
-# catches instead of asserting that it does. Off by default and never in a
-# shipped build: a library that exports a way to panic on purpose is a library
-# with a way to panic on purpose.
-spike-probe = []
 
 [dependencies]
 # `rustls` rather than the workspace default: this crate ships as a shared

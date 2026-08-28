@@ -1,4 +1,4 @@
-//! The pyo3 door onto [`StationHandle`], built as a spike.
+//! The pyo3 door onto [`StationHandle`].
 //!
 //! Not the wheel: no maturin metadata, no build matrix, no distribution name.
 //! Findings are in `README.md`.
@@ -19,7 +19,7 @@
 //! waiting for the GIL.
 //!
 //! Rust has no GIL, so no signature can carry the constraint. It is written
-//! down here and exercised by `python/spike.py`.
+//! down here.
 //!
 //! # The bridge is a `log::Log`, not a subscriber
 //!
