@@ -70,8 +70,8 @@ tracing = ["dep:tracing", "aimdb-core/tracing"]
 init-tracing = ["tracing", "dep:tracing-subscriber"]
 
 # Route the crate's own reporting to `log` instead (design 050) — for an FFI
-# layer that hands aimdb a callback rather than installing a subscriber. Must be
-# declared here and not only on aimdb-core: the `log_*` macros expand in this
+# layer that hands aimdb a destination rather than installing a subscriber. Must
+# be declared here and not only on aimdb-core: the `log_*` macros expand in this
 # crate, so the arm is selected by *this* crate's features.
 log = ["aimdb-core/log"]
 

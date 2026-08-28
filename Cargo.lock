@@ -2534,9 +2534,8 @@ dependencies = [
 name = "weather-station-py"
 version = "0.1.0"
 dependencies = [
+ "log",
  "pyo3",
- "tracing",
- "tracing-subscriber",
  "weather-station",
 ]
 

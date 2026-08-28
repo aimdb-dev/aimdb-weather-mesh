@@ -20,20 +20,22 @@
 //!
 //! Rust has no GIL, so no signature can carry the constraint. It is written
 //! down here and exercised by `python/spike.py`.
+//!
+//! # The bridge is a `log::Log`, not a subscriber
+//!
+//! [`init_logging`] used to install the process's global `tracing` subscriber —
+//! the trespass dropping `init_tracing` was meant to end, committed one layer
+//! down. Design 050 gave the facade a second destination, so it installs an
+//! ordinary `log::Log` this module owns and `tracing-subscriber` is out of the
+//! extension's dependency graph.
 
-use std::fmt::Write as _;
 use std::path::PathBuf;
 
+use log::{Level, LevelFilter};
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
-
-use tracing::field::{Field, Visit};
-use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 // `#[pymodule] fn weather_station` generates a module of that name, which
 // shadows the dependency crate inside this file — hence the `::` prefixes.
@@ -229,67 +231,126 @@ impl PyStation {
     }
 }
 
-/// Flattens an event's fields into one line: the `message` field, then the
-/// rest as `key=value`.
-#[derive(Default)]
-struct MessageVisitor {
-    message: String,
-    fields: String,
-}
-
-impl Visit for MessageVisitor {
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" {
-            // `Debug` for the `format_args!` tracing records here prints the
-            // formatted text, without the quotes a `&str` would pick up.
-            let _ = write!(self.message, "{value:?}");
-        } else {
-            let _ = write!(self.fields, " {}={:?}", field.name(), value);
-        }
-    }
-}
-
-impl MessageVisitor {
-    fn finish(self) -> String {
-        let mut out = self.message;
-        out.push_str(&self.fields);
-        out
-    }
-}
-
-/// A `tracing` layer that forwards events into Python's `logging`.
+/// The bridge: a `log` destination that forwards events into Python's
+/// `logging`.
 ///
 /// Why the module exports no `init_tracing`: an extension module is a library
 /// inside somebody else's application, and process-wide logging is that
 /// application's decision. Forwarding makes levels a runtime question a Python
-/// operator answers with the tools they already know.
-struct PyLoggingLayer;
+/// operator answers with the tools they already know. Reaching a
+/// `tracing::Layer` meant installing that application's subscriber to get here,
+/// which is why this is a `log::Log` instead.
+struct PyLogger {
+    /// `(target prefix, level)`, longest prefix first, so the first match wins.
+    directives: Vec<(String, LevelFilter)>,
+    default_level: LevelFilter,
+}
 
 /// `logging` level numbers. `TRACE` has no Python equivalent, so it lands below
 /// `DEBUG`, where `logging` treats it as a custom level.
-fn py_level(level: &Level) -> u8 {
-    match *level {
-        Level::TRACE => 5,
-        Level::DEBUG => 10,
-        Level::INFO => 20,
-        Level::WARN => 30,
-        Level::ERROR => 40,
+fn py_level(level: Level) -> u8 {
+    match level {
+        Level::Trace => 5,
+        Level::Debug => 10,
+        Level::Info => 20,
+        Level::Warn => 30,
+        Level::Error => 40,
     }
 }
 
-impl<S: Subscriber> Layer<S> for PyLoggingLayer {
-    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let meta = event.metadata();
-        let mut visitor = MessageVisitor::default();
-        event.record(&mut visitor);
-        let message = visitor.finish();
-        let level = py_level(meta.level());
+fn parse_level(name: &str) -> Option<LevelFilter> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "off" => Some(LevelFilter::Off),
+        "error" => Some(LevelFilter::Error),
+        "warn" | "warning" => Some(LevelFilter::Warn),
+        "info" => Some(LevelFilter::Info),
+        "debug" => Some(LevelFilter::Debug),
+        "trace" => Some(LevelFilter::Trace),
+        _ => None,
+    }
+}
 
-        // `tracing` targets are Rust module paths (`aimdb_sync::handle`), and
-        // `logging` splits its hierarchy on `.`. Without this translation
+impl PyLogger {
+    /// The filter grammar `EnvFilter` left behind: comma-separated items, each
+    /// either a bare level or `target=level`. Anything unparseable is skipped
+    /// rather than rejected. Coarser than `EnvFilter`, and it matters less here
+    /// than at the C door — this is only the floor below Python's own levels.
+    fn new(filter: Option<&str>) -> Self {
+        let mut directives: Vec<(String, LevelFilter)> = Vec::new();
+        let mut default_level = LevelFilter::Info;
+
+        for item in filter.unwrap_or("info").split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            match item.split_once('=') {
+                Some((target, level)) => {
+                    if let Some(level) = parse_level(level) {
+                        // Either spelling. A Python caller thinks in the dotted
+                        // logger names this bridge hands out, but the target
+                        // matched at log time is the Rust path — so translate
+                        // once here rather than per event.
+                        directives.push((target.trim().replace('.', "::"), level));
+                    }
+                }
+                None => {
+                    if let Some(level) = parse_level(item) {
+                        default_level = level;
+                    }
+                }
+            }
+        }
+
+        directives.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+        Self {
+            directives,
+            default_level,
+        }
+    }
+
+    fn level_for(&self, target: &str) -> LevelFilter {
+        self.directives
+            .iter()
+            .find(|(prefix, _)| target.starts_with(prefix.as_str()))
+            .map(|(_, level)| *level)
+            .unwrap_or(self.default_level)
+    }
+
+    /// The loosest level any directive admits — what `set_max_level` becomes, so
+    /// the cheap global gate never drops an event a directive wanted.
+    fn max_level(&self) -> LevelFilter {
+        self.directives
+            .iter()
+            .map(|(_, level)| *level)
+            .chain(std::iter::once(self.default_level))
+            .max()
+            .unwrap_or(LevelFilter::Info)
+    }
+}
+
+impl log::Log for PyLogger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= self.level_for(metadata.target())
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        // `log` checks `set_max_level` but not `enabled`, so the per-target
+        // directives are applied here — before the GIL is acquired, which is the
+        // point of having a gate below Python at all.
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+
+        let level = py_level(record.level());
+        let message = record.args().to_string();
+
+        // Targets are Rust module paths (`aimdb_sync::handle`), and `logging`
+        // splits its hierarchy on `.`. Without this translation
         // `getLogger("aimdb_core")` would not be a parent of anything aimdb
         // emits, and setting a level on it would silently do nothing.
-        let logger_name = meta.target().replace("::", ".");
+        let logger_name = record.target().replace("::", ".");
 
         // Runs on whatever thread emitted the event — aimdb's runtime thread
         // included, which holds no GIL of its own. That is the acquisition the
@@ -309,13 +370,16 @@ impl<S: Subscriber> Layer<S> for PyLoggingLayer {
             }
         });
     }
+
+    fn flush(&self) {}
 }
 
 /// Route the station's reporting — and aimdb's — into Python's `logging`.
 ///
-/// Returns `True` if this call installed the bridge, `False` if a subscriber
+/// Returns `True` if this call installed the bridge, `False` if a destination
 /// was already in place. Never raises, and never panics: calling it twice is
-/// something Python code does all the time.
+/// something Python code does all the time. `log::set_boxed_logger` is what
+/// makes that answer honest, and it is the same answer for the C door.
 ///
 /// Events arrive on loggers named after the emitting Rust module, with `::`
 /// translated to `.`, so `weather_station`, `aimdb_core.router` and
@@ -330,20 +394,32 @@ impl<S: Subscriber> Layer<S> for PyLoggingLayer {
 ///
 /// `filter` is the cheap gate *below* Python: events it drops never acquire the
 /// GIL at all, which matters because the bridge runs on aimdb's runtime thread.
-/// It takes `tracing`'s `EnvFilter` syntax, defaults to `RUST_LOG`, and falls
-/// back to `info`. Python's own levels do the fine-grained work above it.
+/// It takes comma-separated `level` and `target=level` items
+/// (`info,aimdb_core.builder=debug`; `::` works too), defaults to `RUST_LOG`,
+/// and falls back to `info`. Not `tracing`'s `EnvFilter` syntax — see
+/// `README.md`. Python's own levels do the fine-grained work above it.
 #[pyfunction]
 #[pyo3(signature = (filter = None))]
 fn init_logging(filter: Option<&str>) -> bool {
-    let env_filter = match filter {
-        Some(directives) => EnvFilter::new(directives),
-        None => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+    let from_env;
+    let filter = match filter {
+        Some(directives) => Some(directives),
+        None => {
+            from_env = std::env::var("RUST_LOG").ok();
+            from_env.as_deref()
+        }
     };
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(PyLoggingLayer)
-        .try_init()
-        .is_ok()
+
+    let logger = PyLogger::new(filter);
+    let max = logger.max_level();
+
+    // `set_boxed_logger` rather than `Box::leak` + `set_logger`: it leaks on
+    // success and drops on refusal, so a losing second call keeps nothing alive.
+    if log::set_boxed_logger(Box::new(logger)).is_err() {
+        return false;
+    }
+    log::set_max_level(max);
+    true
 }
 
 #[pymodule]
