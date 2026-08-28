@@ -16,6 +16,26 @@ Numbering is `CR-n` (core requirement). Nothing here is a request to change
 prediction that the C ABI layer would inherit them rather than re-solve them
 held.
 
+## Where these stand
+
+Ten of the twelve are closed in the sibling aimdb checkout. Each section below
+opens with its own status line; this is the summary.
+
+| | Status |
+|---|---|
+| CR-1 fork safety | **closed** — fork generation + `pthread_atfork` in `aimdb-sync/src/fork.rs`, guards on every route in |
+| CR-2 unbounded attach wait | **closed** — `Startup<T>` over a channel; the cause reaches `AttachFailed` |
+| CR-3 bounded shutdown | **closed** — the 10 ms poll and the stranded helper thread are gone, and `shutdown_timeout` documents what a timeout leaves behind |
+| CR-4 panic freedom | **closed** — `deny(clippy::unwrap_used, expect_used, panic)` on `aimdb-sync` and now `aimdb-core`, both stated in the docs |
+| CR-5 error classification | **closed** — `DbErrorKind`, `SyncError::kind()`, both enums `#[non_exhaustive]` |
+| CR-6 consumer through a shared reference | **closed as documentation** — the diagnosis was right and the remedy wrong (`review.md` §4); `SyncConsumer` now says what it is, and the changelog names the fan-out hazard |
+| CR-7 delivery signal | **open** — a decision, not a defect. See below |
+| CR-8 threading and reentrancy contract | **open, half done** — blocking behaviour and cursor semantics are documented per method; "may be called *from* the runtime thread" is not, and nothing pins it |
+| CR-9 no process-globals | **closed** — `make check-no-globals`, in CI, with a positive control and one allowed exception |
+| CR-10 shutdown contract in `aimdb-sync` | **closed** — `AimDbHandle::shutdown(&self)`, `shutdown_timeout`, `is_closed`, pinned by `aimdb-sync/tests/shutdown_contract_test.rs` |
+| CR-11 TLS backend | **closed** — selectable; this crate builds on rustls and its `ldd` is clean |
+| CR-12 log sink without `tracing-subscriber` | **closed** — design 050; both doors install a `log::Log` and neither carries a subscriber |
+
 ---
 
 ## A. Release-gating
@@ -24,6 +44,8 @@ These four change what a correct FFI layer can promise, so they belong in the
 release rather than after it.
 
 ### CR-1 — A `fork()`ed child must not be told its station is open
+
+**Status: closed.** `aimdb-sync` stamps a fork generation, maintained by a `pthread_atfork` handler, and refuses a stale handle on every route in — producer, consumer, factories, detach and `Drop`. `review.md` §6 has the round.
 
 **Measured.** Round *"after fork(), the child has no runtime thread"*. The child
 of a `fork` inherits the handle but not the runtime thread. It is told
@@ -53,6 +75,8 @@ test that forks.
 
 ### CR-2 — No unbounded wait on the attach path
 
+**Status: closed.** The sleep-loop is gone; startup reports travel over a channel as `Startup<T>`, so a runtime thread that cannot start fails the attach with the cause attached. Scope corrected in `review.md` §2 — the C++ door does not take the path this was filed against.
+
 **Read** — `aimdb-sync/src/handle.rs:209-215`. `attach` spins on
 
 ```rust
@@ -81,6 +105,8 @@ thread cannot start, with no code path that can wait unboundedly.
 
 ### CR-3 — A bounded shutdown must be truthful about what it left running
 
+**Status: closed.** The 10 ms poll became a liveness channel (0 ms), the helper thread that could not be reclaimed is gone, and `shutdown_timeout` now documents exactly what an expired timeout leaves behind: the signal was delivered, nothing is stranded, and resources are released eventually rather than by the time it returns.
+
 **Read** — `aimdb-sync/src/handle.rs:341-390`. On timeout, `detach_timeout`
 returns `Err(DetachFailed)` while the runtime thread is still running, and the
 helper thread it spawned to join that thread is never reclaimed — it stays
@@ -106,6 +132,8 @@ destructor that can block five seconds and log from inside `~Station`.
 exactly what the caller may do with the handle afterwards.
 
 ### CR-4 — A panic-freedom contract on the blocking surface
+
+**Status: closed.** `aimdb-sync` carries the denies and says a panic is a bug rather than an error channel; `aimdb-core` now does too, with four sites fixed rather than annotated and the rest carrying an `allow` with a reason. The `panic = "abort"` half of the problem is a consumer's profile and stays a documented caveat.
 
 **Measured** — round *"nothing unwinds across the boundary"*. The FFI layer
 catches: `ws_debug_panic` returns `WS_ERR_PANIC` and the process survives. But
@@ -136,6 +164,8 @@ say a panic is a bug rather than an error channel.
 
 ### CR-5 — A stable error classification in the core, not only in the station crate
 
+**Status: closed.** `DbErrorKind` with eight kinds, `SyncError::kind()` delegating to it, both enums `#[non_exhaustive]`, both matches exhaustive inside their own crate. `review.md` §5.
+
 **Measured, by inheritance.** The C++ door maps failures to exceptions through
 `StationError::kind()` — three actions, exhaustive inside the crate that owns
 the enum, so a variant added later is a compile error there rather than a silent
@@ -164,10 +194,12 @@ exhaustive inside their own crate. Decide this before the release: adding
 ## B. Needed before a C ABI can expose more than publishing
 
 The door is publish-only, as the Python one was. These are what the consumer
-half needs, and they are listed now because the first is an API-shape decision
-that gets more expensive after a registry release.
+half needs. The first was filed as an API-shape decision and turned out to be a
+documentation one; the second is still a decision, and still unmade.
 
 ### CR-6 — `SyncConsumer` must be usable through a shared reference
+
+**Status: closed as documentation, not as an API change.** `review.md` §4 retracts the remedy and the severity: a per-thread consumer is the design, and it works. `SyncConsumer` now says what it is — a subscription with its own cursor, one per thread, `Arc<Mutex<_>>` to split a stream — and the changelog names the one migration hazard, that replacing `clone()` with `consumer()` turns splitting into fan-out with no compile error.
 
 **Read** — `aimdb-sync/src/consumer.rs:105,148,189,239,290`. Every consumer
 method takes `&mut self`, while `SyncProducer::set` takes `&self`.
@@ -192,6 +224,8 @@ serialises every consumer in every language binding to work around a signature.
 through one shared reference, pinned by a test that does it.
 
 ### CR-7 — A delivery signal, or a documented "there is none"
+
+**Status: open.** Nothing between the buffer and the socket reports what was written, and the MQTT connector's QoS 1 ACK is not surfaced. Still a decision rather than a defect — but it is the decision that says whether publish-once-and-exit stations, which are ordinary in C and Python, are supportable at all.
 
 **Measured** — round *"a reading published immediately before close can be
 lost"*: 5/8 temperatures and 2/8 humidities from eight publish-then-close cycles
@@ -220,6 +254,8 @@ of them is currently written down anywhere a consumer would find it.
 
 ### CR-8 — A threading and reentrancy contract, per method
 
+**Status: open, half done.** `SyncConsumer` and `SyncProducer` now document blocking behaviour, cursor semantics and concurrent use through a shared reference, and `AimDbHandle::is_closed` states its own reentrancy. What is still missing is the general property, per method — *may this be called from aimdb's runtime thread?* — and a test that calls one from there. Both doors depend on it: their log callbacks run on that thread, and the spike is the only place it is measured.
+
 Rust has no way to express "safe to call from the runtime thread". The spike
 proves it holds today — a sink that calls `ws_station_is_closed` and
 `ws_station_slot` from inside the logging path, on aimdb's runtime thread,
@@ -235,6 +271,8 @@ runtime thread — with the last one pinned by a test that calls it from there.
 
 ### CR-9 — "No aimdb library installs a process-global" as a checked rule
 
+**Status: closed.** `make check-no-globals`, run in CI, scans the crates that are linked into a host process for subscriber installs, panic hooks, signal handlers, `pthread_atfork` and `set_var`. It carries a positive control, so a pattern that stops matching cannot pass silently, and exactly one allowed exception — the fork detector, which owns the runtime thread it protects.
+
 `aimdb-core`'s `log_*` macros are a feature-gated facade and no aimdb library
 installs a subscriber — verified in this checkout; the only crate that ever
 broke the rule was the Python spike module itself, and it was fixed. Now that
@@ -249,6 +287,8 @@ that owns the runtime thread — never by an FFI shim on the application's behal
 **Acceptance:** a CI grep or a `deny.toml`-style rule over the library crates.
 
 ### CR-10 — Pin the shutdown contract in `aimdb-sync`, not only in `weather-station`
+
+**Status: closed.** `AimDbHandle` grows `shutdown(&self)`, `shutdown_timeout(&self, _)` and `is_closed()`, with all four properties pinned by `aimdb-sync/tests/shutdown_contract_test.rs`: a shared-reference shutdown, idempotence including a four-way race, a shutdown that completes while four threads publish, and an `is_closed` that keeps answering across one. A shutdown also releases the database now, so a consumer parked in `get()` is woken rather than left there — the runtime holds it weakly and the handle owns the strong reference.
 
 Four properties make an FFI layer possible, and all four currently live in
 `weather-station::StationHandle` rather than in the crate whose thread they are
@@ -269,6 +309,8 @@ producers, `is_closed` from another thread mid-shutdown, double shutdown.
 
 ### CR-11 — Make the TLS backend selectable
 
+**Status: closed.** `tokio-native-tls` / `tokio-rustls` / neither in the connector, mirrored in `weather-station`; this crate builds on rustls and `ldd` shows only libc, libm and libgcc_s. Costs 3.7 MB. `review.md` §7.
+
 **Measured.** The cdylib links `libssl.so.3` and `libcrypto.so.3`; a static
 consumer's link fails without `-lssl -lcrypto` (rustc's own
 `--print native-static-libs` names them). It arrives through `rumqttc`'s
@@ -287,6 +329,8 @@ system dependency entirely for consumers that want that.
 **Acceptance:** an FFI-facing build with no `libssl`/`libcrypto` in `ldd`.
 
 ### CR-12 — A log sink that does not require `tracing-subscriber`
+
+**Status: closed.** Design 050 gave `aimdb-core`'s facade a `log` destination, so an FFI layer installs an ordinary `log::Log` it owns and `set_boxed_logger` makes the first-wins decision once, in Rust, for every binding. Neither door carries `tracing-subscriber` any more.
 
 Both doors had to add `tracing` *and* `tracing-subscriber` to their manifests to
 write a `Layer`, even though neither adds a crate to the build graph. That is
