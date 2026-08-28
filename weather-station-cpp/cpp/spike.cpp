@@ -274,9 +274,31 @@ struct Captured {
 static Captured captured;
 static std::thread::id main_thread_id;
 
+// The context pointer the first caller installs. Under the old `tracing` layer
+// it could not travel with the callback — a `tracing::Layer` had nowhere to
+// keep it — so the header held it in a static instead. Design 050 gave the
+// destination somewhere to put it; these two prove it arrived.
+static char first_cookie[] = "the first caller's user_data";
+static char second_cookie[] = "the second caller's user_data";
+static std::atomic<bool> wrong_user_data{false};
+static std::atomic<int> refused_sink_calls{0};
+
 static void sink(int level, const char *target, const char *message, void *user_data) {
-    (void)user_data;
+    if (user_data != first_cookie) {
+        wrong_user_data.store(true);
+    }
     captured.add(level, target, message);
+}
+
+// Installed by a second `init_logging`, which must be refused. Every call here
+// is a first caller whose sink was replaced behind its back — the defect the
+// header's last-wins static used to have over the C layer's first-wins.
+static void refused_sink(int level, const char *target, const char *message, void *user_data) {
+    (void)level;
+    (void)target;
+    (void)message;
+    (void)user_data;
+    refused_sink_calls.fetch_add(1, std::memory_order_relaxed);
 }
 
 // --- rounds ---------------------------------------------------------------
@@ -298,12 +320,20 @@ static void log_sink_round() {
     std::cout << "\nthe log sink" << std::endl;
     // Installed before anything opens a station, so every round below runs
     // with the runtime thread calling out into this program.
-    check("init_logging installs the sink", weather_station::init_logging(sink) == true);
+    check("init_logging installs the sink",
+          weather_station::init_logging(sink, first_cookie) == true);
     // The reason this returns a bool rather than aborting: `.init()` panics on
     // a second call, and a panic reaching a C++ frame is undefined behaviour —
     // there is no PanicException here to convert it into. A library inside a
     // library sets logging up twice all the time.
-    check("calling it twice is a false, not an abort", weather_station::init_logging(sink) == false);
+    //
+    // A *different* sink, deliberately: the old header assigned its static
+    // before asking whether the install would be accepted, so this call
+    // returned false and replaced the first caller's sink anyway. Whether it
+    // still does is answered by `refused_sink_calls` in the routing round,
+    // once the runtime thread has had a whole program to emit through.
+    check("calling it twice is a false, not an abort",
+          weather_station::init_logging(refused_sink, second_cookie) == false);
 }
 
 static void hostile_arguments(const fs::path &workdir) {
@@ -871,6 +901,16 @@ static void throwing_sink(const fs::path &live) {
 
 static void sink_routing() {
     std::cout << "\nthe sink reports which subsystem spoke" << std::endl;
+    // The two defects design 050 deleted from the header, asserted after a
+    // whole program's worth of events rather than at the install site.
+    check("a refused init_logging did not replace the first caller's sink",
+          refused_sink_calls.load() == 0,
+          std::to_string(refused_sink_calls.load()) + " event(s) went to the refused sink");
+    // `captured.size()` is part of the claim: with the old header the first
+    // caller's sink stopped being called at all, so "no wrong pointer arrived"
+    // would have passed by never being asked.
+    check("user_data travelled with the callback", captured.size() > 0 && !wrong_user_data.load(),
+          std::to_string(captured.size()) + " event(s) carried it");
     check("the station's events arrive under weather_station",
           !captured.targets_with("weather_station").empty(),
           [&]() {

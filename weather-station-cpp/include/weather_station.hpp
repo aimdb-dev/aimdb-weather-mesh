@@ -196,27 +196,30 @@ using LogSink = void (*)(int level, const char *target, const char *message, voi
 
 namespace detail {
 
-struct SinkHolder {
+// The pair the C ABI cannot carry in one `void *`. Allocated per install and
+// handed to Rust as `user_data`, which is what design 050 made possible: the
+// sink below the boundary now holds a context pointer, so this header keeps no
+// static of its own.
+//
+// It used to. A function-local `SinkHolder` was assigned on every
+// `init_logging` call — written from the caller's thread while aimdb's runtime
+// thread read it from the trampoline (a data race), and written *before* asking
+// whether the install would be accepted, so a second caller replaced the first
+// caller's sink and then returned false to say it had not. Both defects were
+// that static; there is no longer one to have them.
+struct SinkPair {
     LogSink sink;
     void *user_data;
 };
 
-// Function-local static: initialised once, never destroyed before the process
-// ends, which is exactly the lifetime the C ABI demands of user_data.
-inline SinkHolder &sink_holder() {
-    static SinkHolder holder{nullptr, nullptr};
-    return holder;
-}
-
 extern "C" inline void sink_trampoline(int level, const char *target, const char *message,
-                                       void *user_data) noexcept {
-    (void)user_data;
-    SinkHolder &holder = sink_holder();
-    if (holder.sink == nullptr) {
+                                       void *pair) noexcept {
+    const SinkPair *held = static_cast<const SinkPair *>(pair);
+    if (held == nullptr || held->sink == nullptr) {
         return;
     }
     try {
-        holder.sink(level, target, message, holder.user_data);
+        held->sink(level, target, message, held->user_data);
     } catch (...) {
         // Swallowed on purpose. The alternative is undefined behaviour, and
         // there is nowhere to report to: this is the logging path.
@@ -226,8 +229,19 @@ extern "C" inline void sink_trampoline(int level, const char *target, const char
 } // namespace detail
 
 inline bool init_logging(LogSink sink, void *user_data = nullptr, const char *filter = nullptr) {
-    detail::sink_holder() = detail::SinkHolder{sink, user_data};
-    return ws_init_logging(filter, &detail::sink_trampoline, nullptr);
+    if (sink == nullptr) {
+        return false;
+    }
+    // Owned by the process on the accepted path, exactly as the C contract
+    // demands of user_data. On the refused path nothing below kept a pointer to
+    // it, so it is this call's to release — which is what makes the false
+    // honest: the losing caller changes nothing.
+    detail::SinkPair *pair = new detail::SinkPair{sink, user_data};
+    if (ws_init_logging(filter, &detail::sink_trampoline, pair)) {
+        return true;
+    }
+    delete pair;
+    return false;
 }
 
 } // namespace weather_station

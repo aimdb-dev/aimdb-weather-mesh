@@ -149,8 +149,11 @@ typedef void (*ws_log_callback)(int level, const char *target, const char *messa
  * place. Never aborts: a second call is something a library inside a library
  * does all the time.
  *
- * `filter` uses tracing's EnvFilter syntax; NULL means RUST_LOG, falling back
- * to "info". It gates *below* the callback — events it drops never cross.
+ * `filter` is a comma-separated list of `level` and `target=level` items, e.g.
+ * "info,aimdb_core::builder=debug"; the longest matching target prefix wins.
+ * NULL means RUST_LOG, falling back to "info". It gates *below* the callback —
+ * events it drops never cross. This is NOT tracing's EnvFilter syntax: span,
+ * field and regex directives are gone with tracing-subscriber. See README.md.
  *
  * The sink CANNOT BE UNINSTALLED. `callback` and `user_data` must remain valid
  * for the lifetime of the process, which in practice means this library must

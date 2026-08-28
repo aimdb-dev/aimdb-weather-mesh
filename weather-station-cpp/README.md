@@ -156,6 +156,30 @@ The round now reads:
 Details, and why the fix could not live in this layer, in `REQUIREMENTS.md`
 (CR-1) and `review.md` §6.
 
+### The two defects in the header, deleted rather than fixed
+
+**A second `init_logging` replaced the first caller's sink and returned `false`
+to say it had not — and wrote the pointer it replaced while aimdb's runtime
+thread was reading it.**
+
+Both came from one place: a `tracing::Layer` has nowhere to put a `void
+*user_data`, so the header kept a `detail::SinkHolder` static beside the
+callback. It was assigned on every call, before asking whether the install would
+be accepted (last-wins over a C layer that was first-wins), and assigned from
+the calling thread while the trampoline read it from aimdb's runtime thread.
+
+Design 050 gave the sink below the boundary somewhere to keep a context pointer,
+so the static has no reason to exist. `ws_init_logging` forwards to
+`log::set_boxed_logger`, which makes the first-wins decision once and in Rust
+for every binding; the header allocates the `(sink, user_data)` pair, hands it
+over as `user_data`, and releases it if the install is refused. There is no
+static left to race on and no second opinion about who won.
+
+Measured, by running the current spike against the previous header: **86,890
+events went to the sink that had just been told it was not installed**, and the
+first caller's sink stopped receiving entirely — which took the reentrancy and
+target-routing rounds down with it. Against the current header, zero.
+
 ### Accepted, not fixed
 
 **`close()` is not a flush**, exactly as in the Python door: `publish_*` hands
@@ -166,14 +190,24 @@ from eight publish-then-close cycles with no grace period; with a 20 ms grace,
 Python spike reported 8/8 with no grace on this host — which is the argument for
 an ACK topic rather than a shutdown that waits, not against it.
 
+**Per-target filtering is coarser than it was, deliberately.** `filter` used to
+take `tracing`'s `EnvFilter` syntax, which came free with `tracing-subscriber`.
+Design 050 took `tracing-subscriber` out of this library — a `cdylib` in
+somebody else's process should not be installing that process's global
+subscriber — and with it went span filters, field filters and regex directives.
+What remains is `level` and `target=level`, comma-separated, longest matching
+prefix first: `info,aimdb_core::builder=debug`. A real regression in
+convenience, and the trade this door was built to make; a Rust consumer keeps
+`EnvFilter` exactly as before.
+
 **The log target reaches C unmodified.** The Python bridge rewrites `::` to `.`
 because `logging` splits its hierarchy there and `getLogger("aimdb_core")` would
 otherwise be a parent of nothing. C has no hierarchy, so a C caller gets
 `aimdb_core::builder` and a `strncmp`. Nothing to fix; worth knowing that the
 two doors deliberately differ here.
 
-**The sink cannot be uninstalled.** `tracing`'s global subscriber is set for the
-life of the process, so `callback` and `user_data` must outlive it — which in
+**The sink cannot be uninstalled.** `log::set_logger` is once per process by
+construction, so `callback` and `user_data` must outlive it — which in
 practice means the library must not be `dlclose`d once `ws_init_logging` has run.
 On glibc it currently cannot be: `dlclose` returns 0 and the library stays
 mapped, because Rust's thread-locals give it TLS with destructors. That is a

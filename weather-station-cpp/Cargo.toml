@@ -37,10 +37,12 @@ weather-station = { path = "../weather-station", default-features = false, featu
     "tokio-runtime",
     "rustls",
     "sync",
+    # Design 050: the facade reports to `log`, so this build installs no
+    # subscriber and carries no `tracing-subscriber`. `init-tracing` is
+    # deliberately absent — it is the station-*binary* convenience.
+    "log",
 ] }
 
-# The log sink. Neither is new to the build graph — `weather-station` already
-# pulls both — but a layer cannot be written against a dependency this manifest
-# does not name.
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# The log sink. `std` for `set_boxed_logger`, which leaks the sink on success
+# and drops it on refusal — the first-wins decision, made once and in one place.
+log = { version = "0.4", features = ["std"] }

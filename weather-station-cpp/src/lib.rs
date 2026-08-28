@@ -22,6 +22,15 @@
 //! is installed, aimdb's runtime thread calls out through a function pointer
 //! into the consuming application — the Python door's lock ordering, rewritten
 //! as "whatever lock the callback takes". See `README.md`.
+//!
+//! # The log sink is a `log::Log`, not a subscriber (design 050)
+//!
+//! This layer installs no `tracing` subscriber. Deciding where a host's
+//! diagnostics go is the host's call, and a `tracing::Layer` has nowhere to put
+//! the caller's `user_data` besides a static of this library's own — which is
+//! what the C++ header used to keep, and what raced. A `log::Log` impl *is* the
+//! context, so [`CSink`] carries the callback and the pointer together and
+//! `log::set_boxed_logger` makes the first-wins decision once, in Rust.
 
 // The exported types carry their C names, so the header and this file spell
 // each type the same way.
@@ -29,16 +38,10 @@
 
 use std::cell::RefCell;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
-use std::fmt::Write as _;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use tracing::field::{Field, Visit};
-use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
+use log::{Level, LevelFilter};
 
 use weather_station::{StationError, StationErrorKind, StationHandle, PROFILE_VERSION};
 
@@ -449,82 +452,129 @@ pub type ws_log_callback = Option<
     ),
 >;
 
-/// The installed sink. Written once, read from aimdb's runtime thread.
+fn c_level(level: Level) -> c_int {
+    match level {
+        Level::Trace => WS_LOG_TRACE,
+        Level::Debug => WS_LOG_DEBUG,
+        Level::Info => WS_LOG_INFO,
+        Level::Warn => WS_LOG_WARN,
+        Level::Error => WS_LOG_ERROR,
+    }
+}
+
+fn parse_level(name: &str) -> Option<LevelFilter> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "off" => Some(LevelFilter::Off),
+        "error" => Some(LevelFilter::Error),
+        "warn" | "warning" => Some(LevelFilter::Warn),
+        "info" => Some(LevelFilter::Info),
+        "debug" => Some(LevelFilter::Debug),
+        "trace" => Some(LevelFilter::Trace),
+        _ => None,
+    }
+}
+
+/// The sink: the callback, the caller's pointer, and the filter, in one value.
 ///
-/// A `OnceLock` rather than an `AtomicPtr` pair because there is no way to
-/// *uninstall* it: `tracing`'s global subscriber is set for the life of the
-/// process. See `README.md`.
-struct Sink {
-    callback: ws_log_callback,
+/// This is the whole point of design 050. Under `tracing` the callback lived in
+/// a `Layer` with nowhere to keep `user_data`, so the C++ header kept a static
+/// beside it — written while aimdb's runtime thread read it. Here the context
+/// *is* the destination, so there is no second place for it to live.
+struct CSink {
+    callback: unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void),
+    /// Held as a `usize` so the struct is plainly `Send + Sync`: the pointer is
+    /// opaque to this layer, the C side owns whatever it addresses, and the
+    /// contract requires it to outlive the process.
     user_data: usize,
+    /// `(target prefix, level)`, longest prefix first, so the first match wins.
+    directives: Vec<(String, LevelFilter)>,
+    default_level: LevelFilter,
 }
 
-// The pointer is opaque to this layer; the C side owns whatever it points at
-// and the contract requires it to outlive the process.
-unsafe impl Send for Sink {}
-unsafe impl Sync for Sink {}
+impl CSink {
+    /// The filter grammar `EnvFilter` left behind: comma-separated items, each
+    /// either a bare level (the default for everything) or `target=level`.
+    /// `aimdb_core=info,aimdb_core::builder=debug` does what it looks like.
+    ///
+    /// Deliberately not `EnvFilter`: matching a prefix list is thirty lines and
+    /// keeps `tracing-subscriber` out of a library that is loaded into somebody
+    /// else's process. Anything unparseable is skipped rather than rejected —
+    /// a filter typo should not silence a station.
+    fn new(
+        callback: unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void),
+        user_data: *mut c_void,
+        filter: Option<&str>,
+    ) -> Self {
+        let mut directives: Vec<(String, LevelFilter)> = Vec::new();
+        let mut default_level = LevelFilter::Info;
 
-static SINK: std::sync::OnceLock<Sink> = std::sync::OnceLock::new();
-static SINK_INSTALLED: AtomicBool = AtomicBool::new(false);
+        for item in filter.unwrap_or("info").split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            match item.split_once('=') {
+                Some((target, level)) => {
+                    if let Some(level) = parse_level(level) {
+                        directives.push((target.trim().to_string(), level));
+                    }
+                }
+                None => {
+                    if let Some(level) = parse_level(item) {
+                        default_level = level;
+                    }
+                }
+            }
+        }
 
-#[derive(Default)]
-struct MessageVisitor {
-    message: String,
-    fields: String,
-}
+        // Longest first: `aimdb_core::builder=debug` must beat `aimdb_core=warn`.
+        directives.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
 
-impl Visit for MessageVisitor {
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" {
-            let _ = write!(self.message, "{value:?}");
-        } else {
-            let _ = write!(self.fields, " {}={:?}", field.name(), value);
+        Self {
+            callback,
+            user_data: user_data as usize,
+            directives,
+            default_level,
         }
     }
-}
 
-impl MessageVisitor {
-    fn finish(self) -> String {
-        let mut out = self.message;
-        out.push_str(&self.fields);
-        out
+    fn level_for(&self, target: &str) -> LevelFilter {
+        self.directives
+            .iter()
+            .find(|(prefix, _)| target.starts_with(prefix.as_str()))
+            .map(|(_, level)| *level)
+            .unwrap_or(self.default_level)
+    }
+
+    /// The loosest level any directive admits — what `set_max_level` is set to,
+    /// so the cheap global gate never drops an event a directive wanted.
+    fn max_level(&self) -> LevelFilter {
+        self.directives
+            .iter()
+            .map(|(_, level)| *level)
+            .chain(std::iter::once(self.default_level))
+            .max()
+            .unwrap_or(LevelFilter::Info)
     }
 }
 
-fn c_level(level: &Level) -> c_int {
-    match *level {
-        Level::TRACE => WS_LOG_TRACE,
-        Level::DEBUG => WS_LOG_DEBUG,
-        Level::INFO => WS_LOG_INFO,
-        Level::WARN => WS_LOG_WARN,
-        Level::ERROR => WS_LOG_ERROR,
+impl log::Log for CSink {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= self.level_for(metadata.target())
     }
-}
 
-/// A `tracing` layer that forwards events to a C function pointer.
-///
-/// The pendant of the Python door's `logging` bridge, for the same reason: an
-/// FFI layer is a library inside somebody else's application, and where the
-/// diagnostics go is that application's decision. This installs no subscriber
-/// of its own — only the sink the caller supplied.
-struct CLoggingLayer;
-
-impl<S: Subscriber> Layer<S> for CLoggingLayer {
-    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let Some(sink) = SINK.get() else { return };
-        let Some(callback) = sink.callback else {
+    fn log(&self, record: &log::Record<'_>) {
+        // `log` checks `set_max_level` but not `enabled`, so the per-target
+        // directives are applied here.
+        if !self.enabled(record.metadata()) {
             return;
-        };
-
-        let meta = event.metadata();
-        let mut visitor = MessageVisitor::default();
-        event.record(&mut visitor);
+        }
 
         // Interior NULs would truncate the message; an event is not worth a
         // failure, so they are replaced rather than dropped.
-        let message = CString::new(visitor.finish().replace('\0', "?"))
+        let message = CString::new(record.args().to_string().replace('\0', "?"))
             .unwrap_or_else(|_| CString::new("(unprintable event)").unwrap());
-        let target = CString::new(meta.target().replace('\0', "?"))
+        let target = CString::new(record.target().replace('\0', "?"))
             .unwrap_or_else(|_| CString::new("(unprintable target)").unwrap());
 
         // Runs on whatever thread emitted the event — aimdb's runtime thread
@@ -536,25 +586,31 @@ impl<S: Subscriber> Layer<S> for CLoggingLayer {
         // C++ header's trampoline catches; this catches a *Rust* panic, which
         // is the only half this side can see.
         let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-            callback(
-                c_level(meta.level()),
+            (self.callback)(
+                c_level(record.level()),
                 target.as_ptr(),
                 message.as_ptr(),
-                sink.user_data as *mut c_void,
+                self.user_data as *mut c_void,
             );
         }));
     }
+
+    fn flush(&self) {}
 }
 
 /// Route the station's reporting — and aimdb's — to `callback`.
 ///
 /// Returns `true` if this call installed the sink, `false` if one was already
 /// in place. Never panics and never aborts: a second call is ordinary, and
-/// there is no exception type here to carry a complaint.
+/// there is no exception type here to carry a complaint. The decision is
+/// `log::set_boxed_logger`'s, so it is the same decision for every binding and
+/// no layer above can disagree with it.
 ///
-/// `filter` takes `tracing`'s `EnvFilter` syntax, defaults to `RUST_LOG` when
-/// `NULL`, and falls back to `info`. It is the cheap gate *below* the callback:
-/// events it drops never reach C at all.
+/// `filter` is a comma-separated list of `level` and `target=level` items
+/// (`info,aimdb_core::builder=debug`), defaults to `RUST_LOG` when `NULL`, and
+/// falls back to `info`. It is the cheap gate *below* the callback: events it
+/// drops never reach C at all. It is **not** `tracing`'s `EnvFilter` syntax —
+/// spans, field filters and regex directives are gone; see `README.md`.
 ///
 /// `user_data` is passed back untouched and **must outlive the process**. The
 /// sink cannot be uninstalled — see the module docs.
@@ -569,25 +625,28 @@ pub unsafe extern "C" fn ws_init_logging(
     user_data: *mut c_void,
 ) -> bool {
     let installed = guard(|| {
-        if SINK_INSTALLED.swap(true, Ordering::AcqRel) {
+        let Some(callback) = callback else {
             return 1;
-        }
-        let env_filter = match cstr(filter) {
-            Some(directives) => EnvFilter::new(directives),
-            None => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         };
-        let _ = SINK.set(Sink {
-            callback,
-            user_data: user_data as usize,
-        });
-        if tracing_subscriber::registry()
-            .with(env_filter)
-            .with(CLoggingLayer)
-            .try_init()
-            .is_err()
-        {
+        let from_env;
+        let filter = match cstr(filter) {
+            Some(directives) => Some(directives),
+            None => {
+                from_env = std::env::var("RUST_LOG").ok();
+                from_env.as_deref()
+            }
+        };
+
+        let sink = CSink::new(callback, user_data, filter);
+        let max = sink.max_level();
+
+        // `set_boxed_logger` rather than `Box::leak` + `set_logger`: it leaks on
+        // success and drops on refusal, so the losing caller's sink does not
+        // linger.
+        if log::set_boxed_logger(Box::new(sink)).is_err() {
             return 1;
         }
+        log::set_max_level(max);
         0
     });
     installed == 0

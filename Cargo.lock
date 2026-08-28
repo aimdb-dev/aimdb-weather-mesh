@@ -22,6 +22,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "hashbrown 0.15.5",
+ "log",
  "portable-atomic",
  "serde",
  "serde_json",
@@ -2494,8 +2495,7 @@ dependencies = [
 name = "weather-station-cpp"
 version = "0.1.0"
 dependencies = [
- "tracing",
- "tracing-subscriber",
+ "log",
  "weather-station",
 ]
 
