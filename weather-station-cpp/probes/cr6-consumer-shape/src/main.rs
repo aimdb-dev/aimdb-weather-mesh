@@ -1,4 +1,4 @@
-//! CR-6: what shape can the consumer half of an FFI binding actually take?
+//! What shape can the consumer half of an FFI binding actually take?
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder};
 use aimdb_sync::AimDbBuilderSyncExt;
 use aimdb_tokio_adapter::TokioRecordRegistrarExt;

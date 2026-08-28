@@ -176,8 +176,9 @@ The round now reads:
   ok    no phantom reading reached the broker
 ```
 
-Details, and why the fix could not live in this layer, in `REQUIREMENTS.md`
-(CR-1) and `review.md` §6.
+The fix could not live in this layer: both mechanisms are process-global, and
+an FFI shim registering a `pthread_atfork` handler on behalf of an application
+that did not ask is the same trespass as installing a logging subscriber.
 
 ### The two defects in the header, deleted rather than fixed
 
@@ -271,7 +272,7 @@ The backend is selectable now — `tokio-native-tls`, `tokio-rustls`, or neither
 and this crate builds on `rustls`, so `ldd` shows only libc, libm and libgcc_s
 and the static link line is down to the platform basics. It costs binary size:
 3.9 MB → 8.1 MB release, 2.9 MB → 6.6 MB stripped, since rustls links the stack
-it no longer borrows. `review.md` §7 has the numbers and the reasoning.
+it no longer borrows.
 
 **`-fno-exceptions` does not compile.** The C++ header throws, so a consumer
 built without exceptions — not rare in embedded C++ shops — cannot use it. The C
@@ -293,4 +294,6 @@ Not yet answered, because the door is publish-only: the consumer path.
 `SyncConsumer`'s methods take `&mut self`, unlike `SyncProducer::set(&self)`, so
 a `ws_consumer*` shared between two threads would be aliasing UB with nothing to
 catch it — the exact asymmetry that made `close` a problem in Python, in a place
-where C has no borrow flag to complain. See `REQUIREMENTS.md`.
+where C has no borrow flag to complain. A consumer is a subscription with its
+own cursor, so the shape that works is one per thread rather than one shared
+pointer; `aimdb-sync`'s `SyncConsumer` documents it.

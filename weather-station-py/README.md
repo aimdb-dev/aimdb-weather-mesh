@@ -244,10 +244,9 @@ named, and no longer reachable: this crate takes `weather-station` with
 extension module has no business carrying a subscriber it must not install.
 
 Turning the defaults off also means the TLS backend has to be named here. It is
-`rustls`, for the reason CR-11 gives and which describes this crate exactly: a
-build that must not hand its host process a second OpenSSL. The C door made the
-same call. A wheel built with `native-tls` instead would link the interpreter's
-system OpenSSL, which is the thing CR-11 exists to avoid.
+`rustls`: a wheel must not hand its host interpreter a second OpenSSL. The C
+door made the same call. Built with `native-tls` instead, it would link the
+interpreter's system OpenSSL.
 
 Not yet answered, because the module is publish-only: the consumer path.
 `SyncConsumer` is pull-based (`get`, `get_with_timeout`, `try_get`,

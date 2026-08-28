@@ -29,10 +29,10 @@ crate-type = ["cdylib", "staticlib"]
 spike-probe = []
 
 [dependencies]
-# `rustls` rather than the workspace default: this crate is the one that ships
-# as a shared library into somebody else's process, and CR-11 is about not
-# handing that process a second OpenSSL. `--no-default-features` is what stops
-# `native-tls` arriving through the default set alongside it.
+# `rustls` rather than the workspace default: this crate ships as a shared
+# library into somebody else's process, which must not be handed a second
+# OpenSSL. `--no-default-features` is what stops `native-tls` arriving through
+# the default set alongside it.
 weather-station = { path = "../weather-station", default-features = false, features = [
     "tokio-runtime",
     "rustls",

@@ -11,4 +11,6 @@ sibling aimdb checkout must exist at `../../../../aimdb`.
 
 - `cr6-consumer-shape` — what shape the consumer half of an FFI binding can
   take, given that `SyncConsumer` is `Send + !Sync` with `&mut self` receivers
-  after issue #200. Findings in `../review.md` §4.
+  after issue #200. It answered: a consumer is a subscription with its own
+  cursor, so one per thread is the shape, and `Arc<Mutex<_>>` is what splits a
+  stream instead. `aimdb-sync` documents that on the type.
