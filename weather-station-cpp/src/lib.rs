@@ -528,7 +528,7 @@ impl CSink {
         }
 
         // Longest first: `aimdb_core::builder=debug` must beat `aimdb_core=warn`.
-        directives.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        directives.sort_by_key(|a| core::cmp::Reverse(a.0.len()));
 
         Self {
             callback,
