@@ -6,7 +6,7 @@
 # here — that is the only place the matrix lives.
 
 .PHONY: help build test fmt fmt-check clippy test-embedded lockfile check spike spike-cpp clean clean-embedded \
-	ts-bindings ts-bindings-check wasm-check wasm js
+	ts-bindings ts-bindings-check wasm-check wasm js station-py station-cpp
 .DEFAULT_GOAL := help
 
 # Separate target dir for the cross-compile checks, so an interrupted embedded
@@ -61,7 +61,9 @@ help:
 	@printf "    lockfile       Fail if Cargo.lock is stale for the current sibling checkout\n"
 	@printf "    check          Everything above — run before pushing\n"
 	@printf "\n"
-	@printf "  $(YELLOW)FFI station spikes:$(NC)\n"
+	@printf "  $(YELLOW)FFI stations:$(NC)\n"
+	@printf "    station-py     Run the Python station (CONFIG=station.local.toml)\n"
+	@printf "    station-cpp    Run the C++ station (CONFIG=station.local.toml, needs libcurl)\n"
 	@printf "    spike          Exercise the pyo3 door against a local broker (needs mosquitto)\n"
 	@printf "    spike-cpp      Exercise the C ABI door the same way (needs mosquitto and a C++17 compiler)\n"
 	@printf "\n"
@@ -73,6 +75,36 @@ help:
 	@printf "\n"
 	@printf "  $(BLUE)Note:$(NC) this workspace reaches the aimdb crates by path, so a sibling\n"
 	@printf "        aimdb checkout must exist at ../aimdb.\n"
+
+CONFIG ?= station.local.toml
+
+## Run the Python station — see weather-station-py/README.md
+##
+## The module is copied to `weather_station.so` and reached through PYTHONPATH,
+## which is what an installed wheel does for you. Until there is a wheel, this
+## is the import path.
+station-py:
+	@printf "$(GREEN)Building the Python module...$(NC)\n"
+	cargo build -p weather-station-py
+	@cp $(FFI_TARGET_DIR)/libweather_station.so $(FFI_TARGET_DIR)/weather_station.so
+	@printf "$(GREEN)Starting the station ($(CONFIG))...$(NC)\n"
+	PYTHONPATH=$(FFI_TARGET_DIR) python3 weather-station-py/python/station.py --config $(CONFIG)
+
+## Run the C++ station — see weather-station-cpp/README.md
+##
+## Linked against the cdylib the way a consuming build would link it. libcurl is
+## this station's own dependency, not the library's: it is where the readings
+## come from, which is the half a station of your own replaces.
+station-cpp:
+	@printf "$(GREEN)Building the C ABI library...$(NC)\n"
+	cargo build -p weather-station-cpp
+	@printf "$(GREEN)Building the station...$(NC)\n"
+	$(CXX) $(CXXFLAGS) -Iweather-station-cpp/include \
+		weather-station-cpp/cpp/station.cpp \
+		-L$(FFI_TARGET_DIR) -lweather_station_ffi -lcurl \
+		-o $(FFI_TARGET_DIR)/station-cpp
+	@printf "$(GREEN)Starting the station ($(CONFIG))...$(NC)\n"
+	LD_LIBRARY_PATH=$(FFI_TARGET_DIR) $(FFI_TARGET_DIR)/station-cpp --config $(CONFIG)
 
 ## Exercise the pyo3 door — see weather-station-py/README.md
 ##

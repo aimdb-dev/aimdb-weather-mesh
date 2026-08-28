@@ -35,6 +35,8 @@ over MQTT and one hub aggregates them into a queryable AimDB instance.
 | [`weather-station-knx`](weather-station-knx) | Station template fed by a real KNX installation: temperature and humidity read off the bus through a KNXnet/IP gateway, throttled, and published into an assigned slot. |
 | [`weather-hub`](weather-hub) | Aggregating hub: a fixed pool of station slots, dew point derived per slot, exposed over AimX for the CLI and the dashboard. |
 | [`weather-mesh-client`](weather-mesh-client) | Browser client: the wasm adapter fused with the mesh's contracts, plus the TypeScript facade published as `@aimdb/weather-mesh-client`. |
+| [`weather-station-py`](weather-station-py) | The pyo3 door onto the blocking API, and a station template in Python on top of it. |
+| [`weather-station-cpp`](weather-station-cpp) | The same for C and C++: the C ABI, a header-only C++ layer, and a station template. |
 
 Copy a station out as the starting point for one of your own. What you copy is
 the part that makes it your station — the poll loop, the bus decoding, the
@@ -119,6 +121,18 @@ MESH_SLOTS=8 MQTT_BROKER=localhost cargo run -p weather-hub
 # 3 — station on slot 2 (see the station README for station.local.toml)
 cargo run -p weather-station-openmeteo -- --config station.local.toml
 ```
+
+The same station in Python or C++, on another slot:
+
+```bash
+make station-py  CONFIG=station.local.toml
+make station-cpp CONFIG=station.local.toml
+```
+
+Both reach `weather-station`'s blocking door through an FFI layer and own their
+own poll loop, so they are what a station written in either language looks like
+— see [`weather-station-py`](weather-station-py) and
+[`weather-station-cpp`](weather-station-cpp).
 
 For a KNX station without KNX hardware, [`tools/knx-sensor-sim.py`](tools/knx-sensor-sim.py)
 stands in for the gateway and the sensors behind it:

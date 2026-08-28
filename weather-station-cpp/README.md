@@ -13,7 +13,30 @@ helping at the `extern "C"`.
 No soname, no CMake package config, no generated header — those wait for the tag
 that ships the library.
 
-## Running it
+## The station
+
+`cpp/station.cpp` is the station itself — the pendant of
+`weather-station-openmeteo`, fed by the same API, needing no hardware:
+
+```
+make station-cpp CONFIG=station.local.toml
+```
+
+It owns its loop and calls `publish_*` when it has a reading, which is what the
+blocking door is for. libcurl is the station's dependency, not the library's:
+it is where the readings come from, which is the half a station of your own
+replaces. The two parsers beside it are deliberately small — a line scanner for
+the profile's `[app]` coordinates and a scan for two numbers in a known
+response — because a station reading a sensor deletes both. The mesh tables in
+that same file are parsed below the ABI, by `ws_station_open_profile`.
+
+`OPEN_METEO_URL` points it at a self-hosted Open-Meteo, or at a fake for
+testing. Coordinates come from the profile, then `WEATHER_LAT`/`WEATHER_LON`,
+then Vienna; half a pair is an error. SIGINT and SIGTERM set a
+`volatile sig_atomic_t` and nothing else: closing from inside a handler would
+run aimdb's shutdown on the signal stack.
+
+## Running the spike
 
 ```
 make spike-cpp

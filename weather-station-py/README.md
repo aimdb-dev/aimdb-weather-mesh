@@ -11,7 +11,32 @@ registry, where changing either costs a version in two repositories.
 No maturin metadata, no build matrix, no distribution name — those wait for the
 tag that ships the wheels.
 
-## Running it
+## The station
+
+`python/station.py` is the station itself — the pendant of
+`weather-station-openmeteo`, fed by the same API, needing no hardware:
+
+```
+make station-py CONFIG=station.local.toml
+```
+
+It owns its loop and calls `publish_*` when it has a reading, which is what the
+blocking door is for; the Rust template hands aimdb two async sources instead
+and lets the record graph drive them. Everything the mesh defines stays below
+the boundary, so what a station of your own replaces is the fetch — swap
+`fetch()` for a sensor read and the rest stands.
+
+`OPEN_METEO_URL` points it at a self-hosted Open-Meteo, or at a fake for
+testing. Coordinates come from the profile's `[app]`, then
+`WEATHER_LAT`/`WEATHER_LON`, then Vienna; half a pair is an error rather than a
+silent mix. SIGINT and SIGTERM set an event the loop waits on — the handler
+does nothing else, since `close` being safe from another thread is not the same
+as safe from a signal handler.
+
+Needs 3.11 for `tomllib`, or `pip install tomli` on 3.9/3.10, and the module on
+`PYTHONPATH` — which is the wheel's job, once there is a wheel.
+
+## Running the spike
 
 ```
 make spike
