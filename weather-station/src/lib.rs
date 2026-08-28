@@ -140,7 +140,7 @@ pub mod __macro_deps {
 /// Does nothing if a subscriber is already installed. `try_init` rather than
 /// `init` because the panic `init` raises on a second call is not a station's
 /// to raise: it crosses an FFI boundary as something the host cannot catch.
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "init-tracing")]
 pub fn init_tracing(station_target: &str) {
     use alloc::format;
     use tracing_subscriber::util::SubscriberInitExt;

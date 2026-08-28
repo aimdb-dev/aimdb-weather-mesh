@@ -70,11 +70,22 @@ facade over `tracing`, and no aimdb library installs a subscriber. Only this
 module broke the rule.
 
 `init_tracing` is gone from the module, replaced by `init_logging()`: a
-`tracing_subscriber::Layer` that forwards events into Python's `logging`. It
-returns `True`/`False` rather than panicking. The Rust station binaries keep
+`log::Log` that forwards events into Python's `logging`. It returns
+`True`/`False` rather than panicking. The Rust station binaries keep
 `weather_station::init_tracing` — they *are* the application — and it now uses
 `try_init()`, so a second call is a no-op rather than a panic across an FFI
 boundary.
+
+The first version of this fix left half the problem standing. Reaching a
+`tracing::Layer` at all meant installing the process's global subscriber, so
+`init_logging` committed the very trespass that removing `init_tracing` was
+meant to end — one layer further down, where it was harder to see. Design 050
+gave `aimdb-core`'s facade a second destination, so this bridge is now an
+ordinary `log::Log` this module owns: nothing global is installed on the
+application's behalf beyond the one logger `log` exists to hold, and
+`tracing-subscriber` is out of the extension's dependency graph entirely.
+`log::set_boxed_logger` is also what makes the `True`/`False` honest — the
+first-wins decision is made once, in `log`, for this door and the C one alike.
 
 This gives aimdb's events **more** control than before, not less. The old
 filter hardcoded `"…,aimdb_core=info,aimdb=info"` at build time; now each
@@ -87,12 +98,21 @@ weather_station.init_logging()
 logging.getLogger("aimdb_core").setLevel(logging.WARNING)  # station INFO stays
 ```
 
-One detail that is easy to get wrong: `tracing` targets are Rust module paths
-(`aimdb_core::builder`), and `logging` splits its hierarchy on `.`. The layer
+One detail that is easy to get wrong: event targets are Rust module paths
+(`aimdb_core::builder`), and `logging` splits its hierarchy on `.`. The bridge
 translates `::` to `.`, without which `getLogger("aimdb_core")` would not be a
 parent of anything aimdb emits and setting a level on it would silently do
 nothing. Events observed under `weather_station.broker`, `weather_station.slot`,
 `aimdb_core.builder` and `aimdb_core.session.pump`.
+
+**`init_logging`'s `filter` is coarser than it was.** It took `tracing`'s
+`EnvFilter` syntax, which came free with `tracing-subscriber` and went with it;
+span, field and regex directives are gone. What remains is `level` and
+`target=level`, comma-separated, longest matching prefix first, in either
+spelling — `info,aimdb_core.builder=debug` and `aimdb_core::builder=debug` both
+work. This costs less here than at the C door: `filter` is only the floor that
+keeps unwanted events from acquiring the GIL, and the fine-grained work was
+always Python's `logging` levels above it, which are untouched.
 
 ### The rule the wheel has to carry
 
@@ -191,10 +211,12 @@ CPython's symbols, and that feature is what keeps them out. The first `#[test]`
 that touches an interpreter fails at run time. pyo3 suggests an optional
 feature for exactly this, and the wheel will want one.
 
-`tracing` and `tracing-subscriber` are named in this crate's manifest for the
-logging layer. Neither is new to the build graph — `weather-station` already
-pulls both — but a layer cannot be written against a dependency the manifest
-does not declare.
+`log` is named in this crate's manifest for the logging bridge, with its `std`
+feature for `set_boxed_logger`. `tracing` and `tracing-subscriber` are no longer
+named, and no longer reachable: this crate takes `weather-station` with
+`default-features = false` and without `init-tracing`, so neither appears in
+`cargo tree -p weather-station-py` at all. That is the shape a wheel wants — an
+extension module has no business carrying a subscriber it must not install.
 
 Not yet answered, because the module is publish-only: the consumer path.
 `SyncConsumer` is pull-based (`get`, `get_with_timeout`, `try_get`,

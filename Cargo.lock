@@ -22,6 +22,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "hashbrown 0.15.5",
+ "log",
  "portable-atomic",
  "serde",
  "serde_json",
@@ -95,6 +96,7 @@ version = "0.6.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
+ "libc",
  "thiserror",
  "tokio",
 ]
@@ -2427,9 +2429,8 @@ dependencies = [
 name = "weather-station-py"
 version = "0.1.0"
 dependencies = [
+ "log",
  "pyo3",
- "tracing",
- "tracing-subscriber",
  "weather-station",
 ]
 

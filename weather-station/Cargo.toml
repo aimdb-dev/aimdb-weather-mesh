@@ -10,17 +10,15 @@ publish = false
 # Host stations. Kept as the default so the templates and every `cargo` command
 # in this workspace behave as before; an MCU build opts out with
 # `--no-default-features --features embassy-runtime`.
-default = ["tokio-runtime"]
+default = ["tokio-runtime", "init-tracing"]
 
 # Tokio host station: the `Station` facade, `init_tracing`, and the pre-flight
 # probe. Mutually exclusive with `embassy-runtime`.
 tokio-runtime = [
     "std",
     "preflight",
-    "tracing",
     "dep:aimdb-tokio-adapter",
     "aimdb-mqtt-connector/tokio-runtime",
-    "dep:tracing-subscriber",
 ]
 
 # An MCU station enables *no* feature from this crate: it gets the mesh
@@ -45,6 +43,19 @@ preflight = ["std", "dep:rumqttc", "dep:tokio"]
 # Route the crate's own reporting to `tracing`. Off on Embassy, where the
 # `log_*` macros compile to nothing and the connector reports via defmt.
 tracing = ["dep:tracing", "aimdb-core/tracing"]
+
+# `init_tracing`, the station-binary convenience that installs the process's
+# subscriber. Split out of `tokio-runtime` (design 050) so a host build can have
+# the Tokio station without `tracing-subscriber`: an FFI layer is a library
+# inside somebody else's process and must not install one. In `default`, so a
+# station binary and every template behave exactly as before.
+init-tracing = ["tracing", "dep:tracing-subscriber"]
+
+# Route the crate's own reporting to `log` instead (design 050) — for an FFI
+# layer that hands aimdb a destination rather than installing a subscriber. Must
+# be declared here and not only on aimdb-core: the `log_*` macros expand in this
+# crate, so the arm is selected by *this* crate's features.
+log = ["aimdb-core/log"]
 
 # `StationHandle`: the blocking door, for callers that own their own loop —
 # a Rust thread, or a Python/C/C++ station through an FFI layer above this
