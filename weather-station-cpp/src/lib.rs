@@ -626,3 +626,110 @@ pub unsafe extern "C" fn ws_init_logging(
     });
     installed == 0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    // Addresses of statics, used as opaque cookies. They outlive the process,
+    // which is exactly what the C contract demands of `user_data`.
+    static FIRST_COOKIE: u8 = 1;
+    static SECOND_COOKIE: u8 = 2;
+
+    static FIRST_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static REFUSED_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static WRONG_USER_DATA: AtomicUsize = AtomicUsize::new(0);
+    static TARGETS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    fn cookie(of: &'static u8) -> *mut c_void {
+        of as *const u8 as *mut c_void
+    }
+
+    unsafe extern "C" fn first_sink(
+        _level: c_int,
+        target: *const c_char,
+        _message: *const c_char,
+        user_data: *mut c_void,
+    ) {
+        if user_data != cookie(&FIRST_COOKIE) {
+            WRONG_USER_DATA.fetch_add(1, Ordering::Relaxed);
+        }
+        FIRST_CALLS.fetch_add(1, Ordering::Relaxed);
+        TARGETS.lock().unwrap().push(
+            unsafe { CStr::from_ptr(target) }
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+
+    /// Installed by a second `ws_init_logging`, which must be refused. Every
+    /// call here is a first caller whose sink was replaced behind its back.
+    unsafe extern "C" fn refused_sink(
+        _level: c_int,
+        _target: *const c_char,
+        _message: *const c_char,
+        _user_data: *mut c_void,
+    ) {
+        REFUSED_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Design 050: the two defects the C++ header used to have, asserted where
+    /// they can be asserted without a broker or a C++ toolchain.
+    ///
+    /// The header kept a `SinkHolder` static beside the callback, because a
+    /// `tracing::Layer` had nowhere to put `user_data`. It was assigned on
+    /// every call — before asking whether the install would be accepted, so a
+    /// second caller replaced the first caller's sink and then returned `false`
+    /// to say it had not — and assigned from the calling thread while the
+    /// trampoline read it from aimdb's runtime thread.
+    ///
+    /// One test, not three: `log::set_boxed_logger` is once per process, and
+    /// every test in this binary shares that process.
+    #[test]
+    fn a_refused_install_leaves_the_first_sink_receiving() {
+        let filter = CString::new("trace").expect("filter");
+
+        // SAFETY: both callbacks are `extern "C"`, neither unwinds, and each
+        // cookie is the address of a `static` that outlives the process.
+        unsafe {
+            assert!(
+                ws_init_logging(filter.as_ptr(), Some(first_sink), cookie(&FIRST_COOKIE)),
+                "the first install must be accepted"
+            );
+            log::info!("before the second install");
+
+            assert!(
+                !ws_init_logging(filter.as_ptr(), Some(refused_sink), cookie(&SECOND_COOKIE)),
+                "a second install must be refused"
+            );
+            log::info!("after the second install");
+        }
+
+        assert_eq!(
+            REFUSED_CALLS.load(Ordering::Relaxed),
+            0,
+            "a refused install replaced the first caller's sink"
+        );
+        assert!(
+            FIRST_CALLS.load(Ordering::Relaxed) >= 2,
+            "the first sink stopped receiving after a refused second install"
+        );
+        // Not vacuous: the count above proves the sink was called at all, so a
+        // zero here means the pointer arrived, not that nobody looked.
+        assert_eq!(
+            WRONG_USER_DATA.load(Ordering::Relaxed),
+            0,
+            "user_data did not travel with the callback"
+        );
+        assert!(
+            TARGETS
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|t| t.starts_with("weather_station_ffi")),
+            "the emitting module did not reach C as the target"
+        );
+    }
+}

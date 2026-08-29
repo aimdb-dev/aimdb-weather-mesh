@@ -136,6 +136,8 @@ test:
 	cargo test -p weather-hub
 	@printf "$(YELLOW)  → Testing weather-mesh-client (the exported key rule)$(NC)\n"
 	cargo test -p weather-mesh-client
+	@printf "$(YELLOW)  → Testing weather-station-cpp (the log sink's first-wins contract)$(NC)\n"
+	cargo test -p weather-station-cpp --lib
 	@printf "$(GREEN)✓ All tests passed!$(NC)\n"
 
 ## Format code

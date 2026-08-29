@@ -86,7 +86,10 @@ inline std::string last_error(int status) {
     }
 }
 
-inline void check(int status) {
+// Named for what it does rather than "check": the C ABI reports by return code
+// because it cannot throw, and this is the only place that code is read. It is
+// not asking whether a call *will* work — nothing here does that.
+inline void throw_if_failed(int status) {
     if (status != WS_OK) {
         raise(status);
     }
@@ -114,7 +117,7 @@ public:
         // a non-UTF-8 filesystem path is lost, and the C ABI has no other way
         // to hear about it.
         const std::string path = profile.string();
-        detail::check(ws_station_open_profile(path.c_str(), &handle_));
+        detail::throw_if_failed(ws_station_open_profile(path.c_str(), &handle_));
     }
 
     ~Station() {
@@ -143,27 +146,27 @@ public:
     // threads publish through one station at once. It is the C++ spelling of
     // StationHandle::publish_temperature taking &self.
     void publish_temperature(float celsius) const {
-        detail::check(ws_station_publish_temperature(handle_, celsius));
+        detail::throw_if_failed(ws_station_publish_temperature(handle_, celsius));
     }
 
     void publish_humidity(float percent) const {
-        detail::check(ws_station_publish_humidity(handle_, percent));
+        detail::throw_if_failed(ws_station_publish_humidity(handle_, percent));
     }
 
     // The same, failing rather than waiting.
     void try_publish_temperature(float celsius) const {
-        detail::check(ws_station_try_publish_temperature(handle_, celsius));
+        detail::throw_if_failed(ws_station_try_publish_temperature(handle_, celsius));
     }
 
     void try_publish_humidity(float percent) const {
-        detail::check(ws_station_try_publish_humidity(handle_, percent));
+        detail::throw_if_failed(ws_station_try_publish_humidity(handle_, percent));
     }
 
     // Stop the station. Idempotent, and safe while other threads publish.
     //
     // const for the same reason publish is: a signal handler closing a station
     // its sensor threads are using does not have exclusive access to it.
-    void close() const { detail::check(ws_station_close(handle_)); }
+    void close() const { detail::throw_if_failed(ws_station_close(handle_)); }
 
     std::uint16_t slot() const noexcept { return ws_station_slot(handle_); }
 
