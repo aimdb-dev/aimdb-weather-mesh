@@ -84,7 +84,11 @@ fn to_py_err(err: CoreStationError) -> PyErr {
     match err.kind() {
         StationErrorKind::Profile => ProfileError::new_err(message),
         StationErrorKind::Broker => BrokerError::new_err(message),
-        StationErrorKind::Runtime => StationError::new_err(message),
+        // `Closed` stays a plain `StationError`, as it was when this layer
+        // raised it from its own pre-check: a closed station is the ordinary
+        // end of a run, not a third thing to catch. `StationErrorKind` is
+        // `#[non_exhaustive]`, so an unknown kind lands here too.
+        _ => StationError::new_err(message),
     }
 }
 
@@ -106,21 +110,6 @@ struct PyStation {
     inner: StationHandle,
 }
 
-impl PyStation {
-    /// Refuse a call that needs a live runtime, with a message that says so.
-    ///
-    /// Best-effort, and deliberately not a lock: a close racing this check
-    /// merely means the call fails one layer down with aimdb's own "runtime
-    /// thread has shut down". This is about the message, not correctness — the
-    /// producers refuse a publish after close on their own.
-    fn ensure_open(&self) -> PyResult<()> {
-        if self.inner.is_closed() {
-            return Err(StationError::new_err("this station is closed"));
-        }
-        Ok(())
-    }
-}
-
 #[pymethods]
 impl PyStation {
     /// Join the mesh from a `station.toml` path.
@@ -140,14 +129,12 @@ impl PyStation {
 
     /// Publish a temperature reading, waiting for room in the slot's buffer.
     fn publish_temperature(&self, py: Python<'_>, celsius: f32) -> PyResult<()> {
-        self.ensure_open()?;
         py.detach(|| self.inner.publish_temperature(celsius))
             .map_err(to_py_err)
     }
 
     /// Publish a humidity reading, waiting for room in the slot's buffer.
     fn publish_humidity(&self, py: Python<'_>, percent: f32) -> PyResult<()> {
-        self.ensure_open()?;
         py.detach(|| self.inner.publish_humidity(percent))
             .map_err(to_py_err)
     }
@@ -156,7 +143,6 @@ impl PyStation {
     ///
     /// Does not release the GIL, because it does not block.
     fn try_publish_temperature(&self, celsius: f32) -> PyResult<()> {
-        self.ensure_open()?;
         self.inner
             .try_publish_temperature(celsius)
             .map_err(to_py_err)
@@ -166,7 +152,6 @@ impl PyStation {
     ///
     /// Does not release the GIL, because it does not block.
     fn try_publish_humidity(&self, percent: f32) -> PyResult<()> {
-        self.ensure_open()?;
         self.inner.try_publish_humidity(percent).map_err(to_py_err)
     }
 

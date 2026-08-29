@@ -119,7 +119,10 @@ fn report(err: StationError) -> c_int {
     match err.kind() {
         StationErrorKind::Profile => WS_ERR_PROFILE,
         StationErrorKind::Broker => WS_ERR_BROKER,
-        StationErrorKind::Runtime => WS_ERR_RUNTIME,
+        StationErrorKind::Closed => WS_ERR_CLOSED,
+        // `StationErrorKind` is `#[non_exhaustive]`; a kind added upstream is a
+        // runtime failure here until this layer is taught otherwise.
+        _ => WS_ERR_RUNTIME,
     }
 }
 
@@ -254,19 +257,6 @@ pub unsafe extern "C" fn ws_station_open_profile(
     })
 }
 
-/// Refuse a call that needs a live runtime, with a message that says so.
-///
-/// Best-effort, exactly as the Python door's `ensure_open` is: a close racing
-/// this check merely means the call fails one layer down with aimdb's own
-/// "runtime thread has shut down".
-fn ensure_open(station: &ws_station) -> Option<c_int> {
-    if station.inner.is_closed() {
-        set_last_error("this station is closed");
-        return Some(WS_ERR_CLOSED);
-    }
-    None
-}
-
 macro_rules! publish_fn {
     ($name:ident, $method:ident, $unit:ident) => {
         /// Publish a reading. See the header for blocking behaviour.
@@ -280,9 +270,6 @@ macro_rules! publish_fn {
                     set_last_error(concat!(stringify!($name), ": handle must not be NULL"));
                     return WS_ERR_INVALID_ARGUMENT;
                 };
-                if let Some(code) = ensure_open(station) {
-                    return code;
-                }
                 match station.inner.$method($unit) {
                     Ok(()) => {
                         clear_last_error();

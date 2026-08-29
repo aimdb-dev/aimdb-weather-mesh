@@ -15,15 +15,26 @@ use thiserror::Error;
 /// crate needs a wildcard arm and a variant added later lands in it silently.
 /// This is the classification such a mapping should match on instead — an FFI
 /// layer turning failures into exceptions is the case that needs it, and the
-/// three actions do not grow when the variants do.
+/// actions do not grow when the variants do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StationErrorKind {
     /// The profile is wrong. Edit it, or have it re-issued.
     Profile,
     /// The broker is unreachable or refused the credential. Fix the
     /// deployment, or re-join for a fresh slot.
     Broker,
-    /// The station's own machinery or host. Neither of the above will help.
+    /// The station is closed: its runtime thread is gone, or this is a forked
+    /// child that never had one. Nothing reaches the mesh through this handle
+    /// again — open another station.
+    ///
+    /// Distinct from [`Runtime`](StationErrorKind::Runtime) because it is the
+    /// one terminal failure a caller can *expect*: it is what every in-flight
+    /// publish gets during shutdown, and a caller that treats it as an error
+    /// worth reporting will report it once per sensor thread on every clean
+    /// exit.
+    Closed,
+    /// The station's own machinery or host. None of the above will help.
     Runtime,
 }
 
@@ -119,7 +130,12 @@ impl StationError {
             | Self::BrokerUnreachable { .. }
             | Self::BrokerTimeout(_) => StationErrorKind::Broker,
 
-            Self::Db(_) => StationErrorKind::Runtime,
+            // Delegated, not flattened: `DbError` already classifies this, and
+            // collapsing it here is what used to force the FFI layers to
+            // re-check `is_closed()` before every publish to recover the
+            // distinction — a second check that could disagree with the one the
+            // publish itself performs.
+            Self::Db(e) => Self::from_db_kind(e.kind()),
 
             #[cfg(feature = "sync")]
             Self::ProfileUnreadable { .. } | Self::ProfileMalformed { .. } => {
@@ -127,9 +143,21 @@ impl StationError {
             }
 
             #[cfg(feature = "sync")]
-            Self::GraphStartTimeout(_) | Self::NoWallClock | Self::Sync(_) => {
-                StationErrorKind::Runtime
-            }
+            Self::GraphStartTimeout(_) | Self::NoWallClock => StationErrorKind::Runtime,
+
+            // `SyncError::RuntimeShutdown` and `ForkedChild` are already
+            // `DbErrorKind::Closed`; this is the path a publish after shutdown
+            // actually takes.
+            #[cfg(feature = "sync")]
+            Self::Sync(e) => Self::from_db_kind(e.kind()),
+        }
+    }
+
+    /// The one place aimdb's classification is narrowed to a station's.
+    fn from_db_kind(kind: aimdb_core::DbErrorKind) -> StationErrorKind {
+        match kind {
+            aimdb_core::DbErrorKind::Closed => StationErrorKind::Closed,
+            _ => StationErrorKind::Runtime,
         }
     }
 }
@@ -137,6 +165,39 @@ impl StationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A publish after shutdown classifies as `Closed`, not `Runtime`.
+    ///
+    /// This is what lets an FFI layer report a closed station without checking
+    /// `is_closed()` before every publish — a second check, on a different
+    /// object, that could disagree with the one `SyncProducer::set` performs.
+    /// Both doors used to carry it; deleting it is only sound while this holds.
+    #[cfg(feature = "sync")]
+    #[test]
+    fn a_publish_after_shutdown_is_closed_not_runtime() {
+        assert_eq!(
+            StationError::Sync(aimdb_sync::SyncError::RuntimeShutdown).kind(),
+            StationErrorKind::Closed
+        );
+        // A forked child never had a runtime thread — same terminal answer, and
+        // a message that says which of the two it was.
+        assert_eq!(
+            StationError::Sync(aimdb_sync::SyncError::ForkedChild).kind(),
+            StationErrorKind::Closed
+        );
+    }
+
+    /// The rest of aimdb's kinds stay `Runtime`: `Closed` is the one a caller
+    /// treats differently, and widening it would make every transport hiccup
+    /// look terminal.
+    #[cfg(feature = "sync")]
+    #[test]
+    fn other_db_failures_stay_runtime() {
+        assert_eq!(
+            StationError::Sync(aimdb_sync::SyncError::SetTimeout).kind(),
+            StationErrorKind::Runtime
+        );
+    }
 
     /// The point of `kind` is that it is exhaustive *here*, so a variant added
     /// later is a compile error in this file rather than a silent
