@@ -1,36 +1,25 @@
 //! The C ABI door onto [`StationHandle`].
 //!
 //! Not the shipped library: no soname, no CMake package config, no generated
-//! header. The pendant of `weather-station-py`, for the language where the
-//! boundary is a C ABI rather than an interpreter. Findings are in `README.md`.
+//! header. Findings and contracts are in `README.md`.
 //!
-//! # Three rules this layer exists to keep
+//! Three rules this layer keeps:
 //!
-//! **Nothing unwinds across the boundary.** A Rust panic that reaches a C++
-//! frame is undefined behaviour — there is no pyo3 here to turn it into an
-//! exception object. Every `extern "C"` function below wraps its body in
-//! [`catch_unwind`](std::panic::catch_unwind) and reports [`WS_ERR_PANIC`], and
-//! every callback this layer *invokes* is documented `noexcept` on the C++ side
-//! for the same reason in the other direction.
+//! - **Nothing unwinds across the boundary.** A Rust panic reaching a C++ frame
+//!   is UB, so every `extern "C"` body is wrapped in [`catch_unwind`] and
+//!   reports [`WS_ERR_PANIC`]; callbacks are documented `noexcept` on the C++
+//!   side for the other direction.
+//! - **Every argument is hostile.** No `Option`, no lifetime, no UTF-8
+//!   guarantee. Null and non-UTF-8 are detectable and are detected; dangling is
+//!   not.
+//! - **The callback thread is aimdb's runtime thread.** After [`ws_init_logging`]
+//!   that thread calls out into the consuming application.
 //!
-//! **Every argument is hostile.** C has no `Option`, no lifetime and no UTF-8
-//! guarantee, so a null pointer, a dangling one and a `const char*` that is not
-//! UTF-8 all arrive as ordinary calls. Only the first and third are detectable;
-//! both are, here.
+//! The log sink is a `log::Log`, not a `tracing` subscriber (design 050): a
+//! `Layer` has nowhere to keep the caller's `user_data`, so [`CSink`] holds
+//! callback and pointer together and `log::set_boxed_logger` decides first-wins.
 //!
-//! **The callback thread is aimdb's runtime thread.** Once [`ws_init_logging`]
-//! is installed, aimdb's runtime thread calls out through a function pointer
-//! into the consuming application — the Python door's lock ordering, rewritten
-//! as "whatever lock the callback takes". See `README.md`.
-//!
-//! # The log sink is a `log::Log`, not a subscriber (design 050)
-//!
-//! This layer installs no `tracing` subscriber. Deciding where a host's
-//! diagnostics go is the host's call, and a `tracing::Layer` has nowhere to put
-//! the caller's `user_data` besides a static of this library's own — which is
-//! what the C++ header used to keep, and what raced. A `log::Log` impl *is* the
-//! context, so [`CSink`] carries the callback and the pointer together and
-//! `log::set_boxed_logger` makes the first-wins decision once, in Rust.
+//! [`catch_unwind`]: std::panic::catch_unwind
 
 // The exported types carry their C names, so the header and this file spell
 // each type the same way.
@@ -126,12 +115,10 @@ fn report(err: StationError) -> c_int {
     }
 }
 
-/// Run `body`, turning a panic into [`WS_ERR_PANIC`] rather than undefined
-/// behaviour.
+/// Turn a panic into [`WS_ERR_PANIC`] rather than undefined behaviour.
 ///
-/// The one place this layer can be sure a panic stops. `AssertUnwindSafe` is
-/// deliberate: a panic mid-call may leave the station in a state no C caller
-/// can reason about, hence a distinct code rather than an ordinary failure.
+/// `AssertUnwindSafe` is deliberate: a panic mid-call may leave the station in
+/// a state no C caller can reason about, hence a distinct code.
 fn guard(body: impl FnOnce() -> c_int) -> c_int {
     match catch_unwind(AssertUnwindSafe(body)) {
         Ok(code) => code,
@@ -211,17 +198,10 @@ pub extern "C" fn ws_last_error() -> *const c_char {
     })
 }
 
-/// Join the mesh from a `station.toml` path.
-///
-/// Blocks on the broker pre-flight and the graph's first pump. On success
-/// `*out` owns a station the caller must eventually pass to
-/// [`ws_station_free`].
-///
-/// `path` must be UTF-8. A shipped library would need a `_w` entry point or a
-/// documented encoding rule for Windows; recorded in `README.md`.
+/// Join the mesh from a `station.toml` path. Contract in `weather_station.h`.
 ///
 /// # Safety
-/// `path` must be a NUL-terminated string and `out` a writable pointer.
+/// `path` must be a NUL-terminated UTF-8 string and `out` a writable pointer.
 #[no_mangle]
 pub unsafe extern "C" fn ws_station_open_profile(
     path: *const c_char,
@@ -295,10 +275,8 @@ publish_fn!(
     percent
 );
 
-/// The slot number this station publishes into, or `0` for a null handle.
-///
-/// Still answers after a close: the slot comes from the profile, not the
-/// runtime, and a closed station is still worth naming in a log line.
+/// The slot this station publishes into, or `0` for a null handle. Answers
+/// after a close: the slot comes from the profile, not the runtime.
 ///
 /// # Safety
 /// `handle` must be null or a live station pointer.
@@ -325,11 +303,8 @@ pub unsafe extern "C" fn ws_station_name(handle: *const ws_station) -> *const c_
     }
 }
 
-/// Whether the station has been closed. `true` for a null handle, because a
-/// station that does not exist is not open.
-///
-/// Never takes a lock: this is what a caller asks while holding its own, and
-/// the answer must not queue behind a shutdown.
+/// Whether the station has been closed; `true` for a null handle. Never takes
+/// a lock — the answer must not queue behind a shutdown.
 ///
 /// # Safety
 /// `handle` must be null or a live station pointer.
@@ -341,14 +316,8 @@ pub unsafe extern "C" fn ws_station_is_closed(handle: *const ws_station) -> bool
     }
 }
 
-/// Stop the station and shut its runtime thread down. Idempotent, and safe to
-/// call while other threads publish through the same handle.
-///
-/// Takes `const ws_station*` on purpose: `StationHandle::shutdown` takes
-/// `&self`, so this needs no exclusive access to a handle a publish is using.
-///
-/// A reading published in the last milliseconds before this does not
-/// necessarily arrive; see `README.md`.
+/// Stop the station and shut its runtime thread down. Idempotent, and safe
+/// while other threads publish: `shutdown` takes `&self`, hence `const` here.
 ///
 /// # Safety
 /// `handle` must be a live station pointer.
@@ -369,19 +338,15 @@ pub unsafe extern "C" fn ws_station_close(handle: *const ws_station) -> c_int {
     })
 }
 
-/// Release the station.
+/// Release the station, closing first if the caller did not. `NULL` is a no-op.
 ///
-/// Closes first if the caller did not. Passing `NULL` is a no-op, so this can
-/// sit unguarded in a destructor.
-///
-/// **Not thread-safe against anything else on the same pointer.** Every other
-/// entry point takes a shared reference and may be called from any thread; this
-/// one consumes the allocation, and C has no borrow checker to say so.
+/// **Not thread-safe against anything else on the same pointer** — the one
+/// entry point that consumes the allocation rather than sharing it.
 ///
 /// # Safety
-/// `handle` must be null or a pointer from [`ws_station_open_profile`] that has
-/// not yet been freed, and no other thread may touch it during or after this
-/// call.
+/// `handle` must be null or an unfreed pointer from
+/// [`ws_station_open_profile`], and no other thread may touch it during or
+/// after this call.
 #[no_mangle]
 pub unsafe extern "C" fn ws_station_free(handle: *mut ws_station) {
     if handle.is_null() {
@@ -449,12 +414,8 @@ fn parse_level(name: &str) -> Option<LevelFilter> {
     }
 }
 
-/// The sink: the callback, the caller's pointer, and the filter, in one value.
-///
-/// This is the whole point of design 050. Under `tracing` the callback lived in
-/// a `Layer` with nowhere to keep `user_data`, so the C++ header kept a static
-/// beside it — written while aimdb's runtime thread read it. Here the context
-/// *is* the destination, so there is no second place for it to live.
+/// Callback, caller's pointer and filter in one value — the point of design
+/// 050, since a `tracing::Layer` had nowhere to keep `user_data`.
 struct CSink {
     callback: unsafe extern "C" fn(c_int, *const c_char, *const c_char, *mut c_void),
     /// Held as a `usize` so the struct is plainly `Send + Sync`: the pointer is
@@ -573,22 +534,11 @@ impl log::Log for CSink {
     fn flush(&self) {}
 }
 
-/// Route the station's reporting — and aimdb's — to `callback`.
+/// Route this library's reporting to `callback`. Contract, filter grammar and
+/// `user_data` lifetime in `weather_station.h`.
 ///
-/// Returns `true` if this call installed the sink, `false` if one was already
-/// in place. Never panics and never aborts: a second call is ordinary, and
-/// there is no exception type here to carry a complaint. The decision is
-/// `log::set_boxed_logger`'s, so it is the same decision for every binding and
-/// no layer above can disagree with it.
-///
-/// `filter` is a comma-separated list of `level` and `target=level` items
-/// (`info,aimdb_core::builder=debug`), defaults to `RUST_LOG` when `NULL`, and
-/// falls back to `info`. It is the cheap gate *below* the callback: events it
-/// drops never reach C at all. It is **not** `tracing`'s `EnvFilter` syntax —
-/// spans, field filters and regex directives are gone; see `README.md`.
-///
-/// `user_data` is passed back untouched and **must outlive the process**. The
-/// sink cannot be uninstalled — see the module docs.
+/// First-wins, decided by `log::set_boxed_logger` so every binding agrees:
+/// `true` if this call installed the sink, `false` if one was already there.
 ///
 /// # Safety
 /// `callback` must be safe to call from any thread, must not unwind, and
@@ -633,8 +583,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
-    // Addresses of statics, used as opaque cookies. They outlive the process,
-    // which is exactly what the C contract demands of `user_data`.
+    // Addresses of statics: opaque cookies that outlive the process, as the
+    // `user_data` contract demands.
     static FIRST_COOKIE: u8 = 1;
     static SECOND_COOKIE: u8 = 2;
 
@@ -664,8 +614,7 @@ mod tests {
         );
     }
 
-    /// Installed by a second `ws_init_logging`, which must be refused. Every
-    /// call here is a first caller whose sink was replaced behind its back.
+    /// Must never be called: every call is a first caller silently replaced.
     unsafe extern "C" fn refused_sink(
         _level: c_int,
         _target: *const c_char,
@@ -675,18 +624,10 @@ mod tests {
         REFUSED_CALLS.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Design 050: the two defects the C++ header used to have, asserted where
-    /// they can be asserted without a broker or a C++ toolchain.
+    /// Design 050's first-wins contract: a refused install must not replace the
+    /// sink already there, and `user_data` must travel with the callback.
     ///
-    /// The header kept a `SinkHolder` static beside the callback, because a
-    /// `tracing::Layer` had nowhere to put `user_data`. It was assigned on
-    /// every call — before asking whether the install would be accepted, so a
-    /// second caller replaced the first caller's sink and then returned `false`
-    /// to say it had not — and assigned from the calling thread while the
-    /// trampoline read it from aimdb's runtime thread.
-    ///
-    /// One test, not three: `log::set_boxed_logger` is once per process, and
-    /// every test in this binary shares that process.
+    /// One test, not four: `set_boxed_logger` is once per process.
     #[test]
     fn a_refused_install_leaves_the_first_sink_receiving() {
         let filter = CString::new("trace").expect("filter");
@@ -716,8 +657,7 @@ mod tests {
             FIRST_CALLS.load(Ordering::Relaxed) >= 2,
             "the first sink stopped receiving after a refused second install"
         );
-        // Not vacuous: the count above proves the sink was called at all, so a
-        // zero here means the pointer arrived, not that nobody looked.
+        // Not vacuous: the count above proves the sink was called at all.
         assert_eq!(
             WRONG_USER_DATA.load(Ordering::Relaxed),
             0,

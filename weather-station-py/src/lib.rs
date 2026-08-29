@@ -3,31 +3,14 @@
 //! Not the wheel: no maturin metadata, no build matrix, no distribution name.
 //! Findings are in `README.md`.
 //!
-//! # The GIL is the outermost lock
+//! **The GIL is the outermost lock.** After [`init_logging`], aimdb's runtime
+//! thread calls into Python, so never hold the GIL while acquiring anything
+//! that thread can block on. Every wait on it — `close` included, which joins
+//! it — goes through [`Python::detach`], and `is_closed` never takes the mutex
+//! `shutdown` holds. No signature can carry that, hence the note.
 //!
-//! [`init_logging`] makes aimdb's runtime thread call into Python to log, so
-//! from that point on every wait this module performs is part of a lock
-//! ordering:
-//!
-//! > Never hold the GIL while acquiring anything the runtime thread can block
-//! > on. The GIL must be outermost.
-//!
-//! Concretely: every method that can wait on the runtime thread — `close`
-//! included, which joins it — wraps that wait in [`Python::detach`]. And
-//! `StationHandle::is_closed` never takes the mutex `shutdown` holds, so a
-//! getter called under the GIL cannot block behind a shutdown that is itself
-//! waiting for the GIL.
-//!
-//! Rust has no GIL, so no signature can carry the constraint. It is written
-//! down here.
-//!
-//! # The bridge is a `log::Log`, not a subscriber
-//!
-//! [`init_logging`] used to install the process's global `tracing` subscriber —
-//! the trespass dropping `init_tracing` was meant to end, committed one layer
-//! down. Design 050 gave the facade a second destination, so it installs an
-//! ordinary `log::Log` this module owns and `tracing-subscriber` is out of the
-//! extension's dependency graph.
+//! The bridge is a `log::Log`, not a `tracing` subscriber (design 050): a
+//! subscriber is the host application's to install, not this module's.
 
 use std::path::PathBuf;
 
@@ -99,12 +82,10 @@ fn to_py_err(err: CoreStationError) -> PyErr {
 ///     station.publish_temperature(21.5)
 /// ```
 ///
-/// `frozen`, because the supported shape is one reader thread per sensor
-/// publishing through a single seat. It drops the runtime borrow flag a
-/// non-frozen pyclass carries, which is what lets `close()` run while a publish
-/// is in flight — otherwise a `&mut self` method cannot win an exclusive borrow
-/// from a `&self` method parked in `Python::detach`, and fails with "Already
-/// borrowed".
+// `frozen` drops the runtime borrow flag, which is what lets `close()` run
+// while a publish is in flight — a `&mut self` method cannot win an exclusive
+// borrow from a `&self` one parked in `Python::detach`, and would fail with
+// "Already borrowed".
 #[pyclass(frozen, name = "Station", module = "weather_station")]
 struct PyStation {
     inner: StationHandle,
@@ -216,15 +197,8 @@ impl PyStation {
     }
 }
 
-/// The bridge: a `log` destination that forwards events into Python's
-/// `logging`.
-///
-/// Why the module exports no `init_tracing`: an extension module is a library
-/// inside somebody else's application, and process-wide logging is that
-/// application's decision. Forwarding makes levels a runtime question a Python
-/// operator answers with the tools they already know. Reaching a
-/// `tracing::Layer` meant installing that application's subscriber to get here,
-/// which is why this is a `log::Log` instead.
+/// Forwards events into Python's `logging`, so levels stay a runtime question
+/// the operator answers — rather than a subscriber this module installs.
 struct PyLogger {
     /// `(target prefix, level)`, longest prefix first, so the first match wins.
     directives: Vec<(String, LevelFilter)>,
@@ -361,14 +335,11 @@ impl log::Log for PyLogger {
 
 /// Route the station's reporting — and aimdb's — into Python's `logging`.
 ///
-/// Returns `True` if this call installed the bridge, `False` if a destination
-/// was already in place. Never raises, and never panics: calling it twice is
-/// something Python code does all the time. `log::set_boxed_logger` is what
-/// makes that answer honest, and it is the same answer for the C door.
+/// Returns `True` if this call installed the bridge, `False` if one was
+/// already in place. Never raises; calling it twice is ordinary.
 ///
-/// Events arrive on loggers named after the emitting Rust module, with `::`
-/// translated to `.`, so `weather_station`, `aimdb_core.router` and
-/// `aimdb_sync.handle` are all separately addressable:
+/// Events arrive on loggers named after the emitting Rust module, `::`
+/// translated to `.`, so each subsystem is separately addressable:
 ///
 /// ```python
 /// import logging, weather_station
@@ -377,12 +348,10 @@ impl log::Log for PyLogger {
 /// logging.getLogger("aimdb_core").setLevel(logging.WARNING)
 /// ```
 ///
-/// `filter` is the cheap gate *below* Python: events it drops never acquire the
-/// GIL at all, which matters because the bridge runs on aimdb's runtime thread.
-/// It takes comma-separated `level` and `target=level` items
-/// (`info,aimdb_core.builder=debug`; `::` works too), defaults to `RUST_LOG`,
-/// and falls back to `info`. Not `tracing`'s `EnvFilter` syntax — see
-/// `README.md`. Python's own levels do the fine-grained work above it.
+/// `filter` is the gate below Python — events it drops never acquire the GIL.
+/// Comma-separated `level` and `target=level` items
+/// (`info,aimdb_core.builder=debug`; `::` works too); defaults to `RUST_LOG`,
+/// then `info`. Not `EnvFilter` syntax. Python's own levels refine it.
 #[pyfunction]
 #[pyo3(signature = (filter = None))]
 fn init_logging(filter: Option<&str>) -> bool {

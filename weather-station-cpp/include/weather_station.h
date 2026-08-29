@@ -1,12 +1,5 @@
 /* The C ABI of the weather mesh station.
  *
- * Hand-written rather than generated, and that is a finding rather than a
- * shortcut: cbindgen would produce this file from `src/lib.rs`, but every line
- * of prose below — what may be called from which thread, what a pointer's
- * lifetime is, what the callback must not do — is the part a C caller actually
- * needs and the part a generator cannot infer. A shipped library generates the
- * declarations and keeps the contract in a file like this one.
- *
  * Every function is safe to call from any thread on a shared station, with the
  * single exception of ws_station_free.
  */
@@ -23,10 +16,7 @@ extern "C" {
 
 /* --- Status codes ------------------------------------------------------- */
 
-/* The three that are not WS_OK and not a caller mistake mirror
- * StationErrorKind: fix the file, fix the deployment, or neither. A C caller's
- * switch needs a default arm regardless, because StationError is
- * #[non_exhaustive] and this enum is what shields the switch from that. */
+/* A switch on these needs a default arm: later versions may add codes. */
 enum ws_status {
     WS_OK = 0,
     WS_ERR_PROFILE = 1,          /* edit the profile, or have it re-issued */
@@ -134,8 +124,7 @@ void ws_station_free(ws_station *station);
  *   1. It must not throw. A C++ exception unwinding into Rust frames is
  *      undefined behaviour; catch inside the callback.
  *   2. It must not block on anything a thread might hold while calling into
- *      this library. That is the whole lock ordering, and it is the C pendant
- *      of the Python door's "the GIL must be outermost".
+ *      this library. That is the whole lock ordering.
  *   3. It must not call ws_station_free.
  *
  * The other entry points may be called from it. */

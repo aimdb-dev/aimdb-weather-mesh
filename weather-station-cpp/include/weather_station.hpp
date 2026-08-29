@@ -1,15 +1,9 @@
 // The C++ door: RAII and exceptions over the C ABI in `weather_station.h`.
 //
-// Header-only, and that is the finding rather than a preference. Rust cannot
-// export C++: no class, no std::string, no std::function survives the boundary,
-// because those have no stable ABI even between two builds of the same
-// compiler. So the shared library exports C, and everything a C++ caller
-// actually wants — a destructor that closes, an exception hierarchy, a
-// std::filesystem::path overload — is written here, compiled by the consumer's
-// own toolchain, and therefore always ABI-compatible with the consumer.
-//
-// The pendant of `weather-station-py`'s "the ergonomic shape belongs in a
-// Python layer over the module". Same conclusion, reached from the other end.
+// Header-only by necessity: Rust cannot export C++, and no class, std::string
+// or std::function has a stable ABI to export anyway. So the library exports C
+// and everything a C++ caller wants is written here, compiled by the consumer's
+// own toolchain and therefore always ABI-compatible with it.
 
 #ifndef WEATHER_STATION_HPP
 #define WEATHER_STATION_HPP
@@ -66,12 +60,9 @@ inline std::string last_error(int status) {
     return "station call failed with status " + std::to_string(status);
 }
 
-// Turn a status code into the exception a caller can act on.
-//
-// The default arm is not optional: ws_status is a C enum, so a library built
-// from a later tag can return a code this header has never heard of. Falling
-// back to the base class keeps such a code catchable instead of silently
-// becoming success.
+// Turn a status code into the exception a caller can act on. The default arm
+// is required: a library from a later tag can return a code this header has
+// never heard of, and it must stay catchable rather than become success.
 [[noreturn]] inline void raise(int status) {
     std::string message = last_error(status);
     switch (status) {
@@ -102,8 +93,8 @@ inline void throw_if_failed(int status) {
 //     weather_station::Station station("station.toml");
 //     station.publish_temperature(21.5f);
 //
-// Move-only. Copying would give two owners one pointer and two destructors one
-// free — the ownership rule the C ABI states in prose, made a compile error.
+// Move-only: copying would give two destructors one free — the C ABI's
+// ownership rule, made a compile error.
 class Station {
 public:
     // Join the mesh from a station.toml path. Blocks; throws on failure.
@@ -186,30 +177,18 @@ private:
 
 // Route this library's reporting — and aimdb's — to `sink`.
 //
-// Returns true if this call installed it, false if a sink was already in
-// place. The trampoline is noexcept: it catches everything, because an
-// exception leaving it would unwind through Rust frames, which is undefined
-// behaviour rather than a crash you can debug.
+// Returns true if this call installed it, false if one was already there.
 //
-// `sink` must outlive the process; see the header. Taking a raw function
-// pointer rather than a std::function is deliberate — a std::function would
-// have to be leaked to satisfy that lifetime, and leaking it quietly on the
-// caller's behalf is worse than saying so in the signature.
+// `sink` must outlive the process. A raw function pointer rather than a
+// std::function is deliberate: the latter would have to be leaked to satisfy
+// that lifetime, and saying so in the signature beats doing it quietly.
 using LogSink = void (*)(int level, const char *target, const char *message, void *user_data);
 
 namespace detail {
 
 // The pair the C ABI cannot carry in one `void *`. Allocated per install and
-// handed to Rust as `user_data`, which is what design 050 made possible: the
-// sink below the boundary now holds a context pointer, so this header keeps no
-// static of its own.
-//
-// It used to. A function-local `SinkHolder` was assigned on every
-// `init_logging` call — written from the caller's thread while aimdb's runtime
-// thread read it from the trampoline (a data race), and written *before* asking
-// whether the install would be accepted, so a second caller replaced the first
-// caller's sink and then returned false to say it had not. Both defects were
-// that static; there is no longer one to have them.
+// handed to Rust as `user_data` — which design 050 made possible, and is why
+// this header keeps no static of its own to race on.
 struct SinkPair {
     LogSink sink;
     void *user_data;

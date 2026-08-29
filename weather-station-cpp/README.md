@@ -124,17 +124,11 @@ installing a logging subscriber.
 an archive (debug), which is what a static consumer's link step chews through
 rather than what it emits.
 
-**OpenSSL is no longer in the link line.** It used to be: the cdylib needed
-`libssl.so.3` and `libcrypto.so.3`, and a static consumer had to pass
-`-lssl -lcrypto`, because `rumqttc` was pinned to `use-native-tls`. For a C++
-consumer that is a system-OpenSSL ABI constraint on every build that links this
-library, and a second OpenSSL in a process that very likely already has one.
-
-The backend is selectable now — `tokio-native-tls`, `tokio-rustls`, or neither —
-and this crate builds on `rustls`, so `ldd` shows only libc, libm and libgcc_s
-and the static link line is down to the platform basics. It costs binary size:
-3.9 MB → 8.1 MB release, 2.9 MB → 6.6 MB stripped, since rustls links the stack
-it no longer borrows.
+**No OpenSSL in the link line.** The TLS backend is selectable and this crate
+builds on `rustls`, so `ldd` shows only libc, libm and libgcc_s — no
+system-OpenSSL ABI constraint on a consumer's build, and no second OpenSSL in a
+process that likely already has one. It costs size: 3.9 → 8.1 MB release,
+2.9 → 6.6 MB stripped, since rustls links the stack it no longer borrows.
 
 **`-fno-exceptions` does not compile.** The C++ header throws, so a consumer
 built without exceptions — not rare in embedded C++ shops — cannot use it. The C
@@ -152,36 +146,21 @@ must refuse each other at startup rather than disagree about a signature at run
 time. It is the C pendant of the wheel's `abi3` decision: one artifact per
 platform, and a way to tell whether it is the right one.
 
-Not yet answered, because the door is publish-only: the consumer path.
-`SyncConsumer`'s methods take `&mut self`, unlike `SyncProducer::set(&self)`, so
-a `ws_consumer*` shared between two threads would be aliasing UB with nothing to
-catch it — the exact asymmetry that made `close` a problem in Python, in a place
-where C has no borrow flag to complain. A consumer is a subscription with its
-own cursor, so the shape that works is one per thread rather than one shared
-pointer; `aimdb-sync`'s `SyncConsumer` documents it.
+**The consumer path, when it lands: a factory, not a handle.** `SyncConsumer`
+reads take `&mut self`, unlike `SyncProducer::set(&self)`, so a `ws_consumer*`
+shared between threads is aliasing UB with nothing in C to catch it. One call
+per consumer, each with its own cursor, and the pointer belongs to the calling
+thread. Three contracts the header must state, because no signature can: one
+per thread, never share the pointer, never call a blocking read inside an async
+runtime.
 
-**The boundary, decided.** When the consumer path lands it is a factory, not a
-handle: a call per consumer, each with its own cursor, and the returned pointer
-belongs to the calling thread. Three contracts no signature can carry, so the
-header has to say them — one per thread, never share the pointer, and never
-call a blocking read from inside an async runtime, because those reads drive
-the future on the calling thread.
+Deliberately **not** carried: a shared consumer. `aimdb-sync` offers
+`Arc<Mutex<SyncConsumer<T>>>` to *split* a stream, and exporting that means
+handing a mutex-guarded handle whose purpose is being shared between threads to
+a language with no borrow flag. It costs little, because every consumer sees
+every value — an application that wants splitting reads the whole stream on one
+thread and pushes into a queue it already has.
 
-What it deliberately will **not** carry is a shared consumer. `aimdb-sync`
-offers `Arc<Mutex<SyncConsumer<T>>>` to *split* a stream — each value to exactly
-one of several workers — and exporting that would mean handing a mutex-guarded
-handle whose entire purpose is to be shared between threads to a language with
-no borrow flag. That is the aliasing problem above, arriving by invitation.
-
-It costs less than it sounds, because every consumer sees every value. A C++
-application that wants splitting does not need an API for it: one thread holds
-one consumer, reads the whole stream, and pushes into whatever queue that
-application already has. Fan-out is free here; partitioning is ordinary
-application architecture.
-
-The escape hatch is narrower than it looks, and worth stating plainly: a caller
-who needs more than this — splitting handed to them, or the async graph itself
-— drops to `aimdb-core` without `aimdb-sync`. That is available to a **Rust**
-consumer. Someone who links this library cannot take it without writing Rust,
-at which point they are not a consumer of this door. For them the door is the
-ceiling, and that is the trade this shape makes.
+A caller needing more drops to `aimdb-core` without `aimdb-sync` — available to
+a **Rust** consumer, not to someone linking this library. For them this is the
+ceiling, and that is the trade.
