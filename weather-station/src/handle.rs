@@ -29,9 +29,8 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A joined mesh station driven from outside the async runtime.
 ///
-/// The record graph runs on a background thread; this is the handle onto it. No
-/// async appears in the API, which is what makes this the type an FFI layer
-/// binds.
+/// The record graph runs on a background thread; this is the handle onto it.
+/// No async in the API, which is what makes it the type an FFI layer binds.
 ///
 /// ```no_run
 /// # use std::thread;
@@ -50,14 +49,9 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 /// # }
 /// ```
 ///
-/// Callers already inside a Tokio runtime want [`Station`](crate::Station) or
-/// [`MeshSlot`](crate::MeshSlot) instead; this type would block a worker thread.
-///
-/// # Not reentrant into a runtime
-///
-/// [`open`](Self::open) blocks on the broker pre-flight, so it must not be
-/// called from inside a Tokio runtime. That suits every FFI caller — a Python
-/// or C station owns a plain OS thread.
+/// Not reentrant into a runtime: [`open`](Self::open) blocks on the broker
+/// pre-flight. Callers already inside Tokio want [`Station`](crate::Station) or
+/// [`MeshSlot`](crate::MeshSlot); an FFI caller owns a plain OS thread anyway.
 pub struct StationHandle {
     slot: MeshSlot,
     temperature: SyncProducer<TemperatureV2>,

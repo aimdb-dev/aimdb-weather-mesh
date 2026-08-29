@@ -11,11 +11,8 @@ use thiserror::Error;
 /// What a caller does about a failure: fix the file, fix the deployment, or
 /// neither.
 ///
-/// [`StationError`] is `#[non_exhaustive]`, so a mapping written outside this
-/// crate needs a wildcard arm and a variant added later lands in it silently.
-/// This is the classification such a mapping should match on instead — an FFI
-/// layer turning failures into exceptions is the case that needs it, and the
-/// actions do not grow when the variants do.
+/// Match on this rather than on [`StationError`], which is `#[non_exhaustive]`
+/// — an FFI layer turning failures into exceptions is the case that needs it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StationErrorKind {
