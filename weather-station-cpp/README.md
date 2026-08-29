@@ -159,3 +159,29 @@ catch it — the exact asymmetry that made `close` a problem in Python, in a pla
 where C has no borrow flag to complain. A consumer is a subscription with its
 own cursor, so the shape that works is one per thread rather than one shared
 pointer; `aimdb-sync`'s `SyncConsumer` documents it.
+
+**The boundary, decided.** When the consumer path lands it is a factory, not a
+handle: a call per consumer, each with its own cursor, and the returned pointer
+belongs to the calling thread. Three contracts no signature can carry, so the
+header has to say them — one per thread, never share the pointer, and never
+call a blocking read from inside an async runtime, because those reads drive
+the future on the calling thread.
+
+What it deliberately will **not** carry is a shared consumer. `aimdb-sync`
+offers `Arc<Mutex<SyncConsumer<T>>>` to *split* a stream — each value to exactly
+one of several workers — and exporting that would mean handing a mutex-guarded
+handle whose entire purpose is to be shared between threads to a language with
+no borrow flag. That is the aliasing problem above, arriving by invitation.
+
+It costs less than it sounds, because every consumer sees every value. A C++
+application that wants splitting does not need an API for it: one thread holds
+one consumer, reads the whole stream, and pushes into whatever queue that
+application already has. Fan-out is free here; partitioning is ordinary
+application architecture.
+
+The escape hatch is narrower than it looks, and worth stating plainly: a caller
+who needs more than this — splitting handed to them, or the async graph itself
+— drops to `aimdb-core` without `aimdb-sync`. That is available to a **Rust**
+consumer. Someone who links this library cannot take it without writing Rust,
+at which point they are not a consumer of this door. For them the door is the
+ceiling, and that is the trade this shape makes.

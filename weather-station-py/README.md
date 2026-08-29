@@ -125,3 +125,25 @@ above trivially satisfied. A Rust-side `on_reading(callback)` would not: it
 puts a GIL acquisition on the one thread every shutdown path waits for. The
 ergonomic shape belongs in a Python layer over an iterator, in a mixed wheel,
 where the callback runs on an ordinary Python thread.
+
+**The boundary, decided.** When it lands it is a factory: `consumer(key)`
+returns a fresh object per call, each with its own cursor, and the caller keeps
+it on one thread. That is not a style preference. `SyncConsumer`'s reads take
+`&mut self`, so a consumer pyclass cannot be `frozen` the way `Station` is —
+which brings back the runtime borrow flag, and a blocking read parked in
+`Python::detach` while another thread touches the same object fails with
+"Already borrowed". One per thread is what keeps that from happening; a shared
+one is what causes it.
+
+So the module deliberately will **not** hand out a shared consumer, even though
+`aimdb-sync` offers `Arc<Mutex<SyncConsumer<T>>>` for splitting a stream. It
+costs little, because every consumer sees every value: a Python application
+that wants each value to reach exactly one worker does not need an API for it —
+one thread pulls the whole stream into a `queue.Queue` and the rest is ordinary
+Python. Fan-out is free here; partitioning belongs to the application.
+
+Worth stating plainly, because it reads the other way round: a caller who needs
+more than this drops to `aimdb-core` without `aimdb-sync`. That is available to
+a **Rust** consumer. Someone who installs this wheel cannot take it without
+writing Rust, at which point they are not a user of this module. For them the
+wheel is the ceiling, and that is the trade this shape makes.
