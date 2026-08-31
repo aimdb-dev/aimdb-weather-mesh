@@ -58,22 +58,21 @@ void log_sink(int level, const char *target, const char *message, void *) {
     std::fprintf(stderr, "%-5s %s: %s\n", name, target, message);
 }
 
-// One reading of the station's location. Both values come from one request, so
-// they describe the same moment — which is what the hub's dew-point join over
-// the two records wants. A BME280 behaves the same way: one transaction, both
-// values.
+// The two numbers `fetch` returns from one Open-Meteo response. A station
+// reading a BME280 fills the same struct from one transaction.
 struct Observation {
     double celsius;
     double percent;
 };
 
+// Redirects libcurl's response body away from stdout.
 std::size_t collect(char *data, std::size_t size, std::size_t count, void *into) {
     static_cast<std::string *>(into)->append(data, size * count);
     return size * count;
 }
 
 // The number after "<key>":  — enough for the two fields this station reads out
-// of one known response, and not a JSON parser. A station reading a sensor has
+// of one known response and not a JSON parser. A station reading a sensor has
 // no JSON at all; one talking to a service with a richer response wants a real
 // parser here.
 std::optional<double> number_after(const std::string &body, const std::string &key) {
