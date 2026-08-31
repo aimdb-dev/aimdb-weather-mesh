@@ -2,9 +2,8 @@
 
 use alloc::string::{String, ToString};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use aimdb_core::{AimDbBuilder, RecordKey};
@@ -56,21 +55,9 @@ pub struct StationHandle {
     slot: MeshSlot,
     temperature: SyncProducer<TemperatureV2>,
     humidity: SyncProducer<HumidityV1>,
-    /// Whether [`shutdown`](Self::shutdown) has taken the handle out of `db`.
-    ///
-    /// An atomic rather than a peek at the mutex below, because
-    /// [`is_closed`](Self::is_closed) is what an FFI layer calls while holding
-    /// its own interpreter lock. See the lock-ordering note on `shutdown`.
-    closed: AtomicBool,
-    /// In a mutex so [`shutdown`](Self::shutdown) can take `&self`: an FFI door
-    /// never receives `self` by value, and a `&mut self` door would collide
-    /// with a publish already in flight.
-    ///
-    /// A publish never contends for this lock — [`SyncProducer`] reaches the
-    /// database through its own `Weak<AimDb>` — so `shutdown` cannot queue
-    /// behind one. Dropped last: those weak references point at what this field
-    /// owns.
-    db: Mutex<Option<AimDbHandle>>,
+    // Last, so it drops after the producers: their `Weak<AimDb>` points at what
+    // it owns.
+    db: AimDbHandle,
 }
 
 /// The mesh tables, parsed on behalf of a caller that has a file rather than a
@@ -158,8 +145,7 @@ impl StationHandle {
             slot,
             temperature,
             humidity,
-            closed: AtomicBool::new(false),
-            db: Mutex::new(Some(db)),
+            db,
         })
     }
 
@@ -224,30 +210,9 @@ impl StationHandle {
     /// [`SyncError::RuntimeShutdown`](aimdb_sync::SyncError::RuntimeShutdown),
     /// deliberately: keeping the database alive would let `set()` go on
     /// returning `Ok` into a buffer nobody reads.
-    ///
-    /// # Lock ordering
-    ///
-    /// The guard is dropped *before* the runtime thread is joined — hence the
-    /// `let` below rather than matching on the `take()` directly, which would
-    /// extend the guard's lifetime to the end of the match. A caller that
-    /// blocks on this mutex while holding a lock the runtime thread needs (an
-    /// FFI layer's interpreter lock, when that thread logs through a bridge into
-    /// it) would otherwise deadlock against its own shutdown.
     pub fn shutdown(&self) -> Result<(), StationError> {
-        let taken = self
-            .db
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        self.closed.store(true, Ordering::Release);
-        match taken {
-            Some(db) => {
-                db.detach_timeout(SHUTDOWN_TIMEOUT)?;
-                Ok(())
-            }
-            // Already shut down. Nothing to join, and nothing to report.
-            None => Ok(()),
-        }
+        self.db.shutdown_timeout(SHUTDOWN_TIMEOUT)?;
+        Ok(())
     }
 
     /// Whether this station can still publish.
@@ -261,12 +226,10 @@ impl StationHandle {
     /// is the very check a publish goes through: this cannot report open while
     /// a publish would be refused.
     ///
-    /// Never takes the mutex — the producer is reachable without it — so a
-    /// caller holding an interpreter lock can ask this while a shutdown is
-    /// joining the runtime thread, without closing the cycle described on
-    /// `shutdown`.
+    /// Neither half takes a lock, so a caller holding an interpreter lock can
+    /// ask this while another thread is joining the runtime thread.
     pub fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::Acquire) || self.temperature.check().is_err()
+        self.db.is_closed() || self.temperature.check().is_err()
     }
 
     /// [`shutdown`](Self::shutdown) for a caller that owns the handle by value.
