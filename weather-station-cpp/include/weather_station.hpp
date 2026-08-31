@@ -199,8 +199,8 @@ using LogSink = void (*)(int level, const char *target, const char *message, voi
 namespace detail {
 
 // The pair the C ABI cannot carry in one `void *`. Allocated per install and
-// handed to Rust as `user_data` — which design 050 made possible, and is why
-// this header keeps no static of its own to race on.
+// handed to Rust as `user_data`, so this header keeps no static of its own to
+// race on.
 struct SinkPair {
     LogSink sink;
     void *user_data;

@@ -9,8 +9,8 @@
 //! it — goes through [`Python::detach`], and `is_closed` never takes the mutex
 //! `shutdown` holds. No signature can carry that, hence the note.
 //!
-//! The bridge is a `log::Log`, not a `tracing` subscriber (design 050): a
-//! subscriber is the host application's to install, not this module's.
+//! The bridge is a `log::Log`, not a `tracing` subscriber: a subscriber is the
+//! host application's to install, not this module's.
 
 use std::path::PathBuf;
 
@@ -67,10 +67,9 @@ fn to_py_err(err: CoreStationError) -> PyErr {
     match err.kind() {
         StationErrorKind::Profile => ProfileError::new_err(message),
         StationErrorKind::Broker => BrokerError::new_err(message),
-        // `Closed` stays a plain `StationError`, as it was when this layer
-        // raised it from its own pre-check: a closed station is the ordinary
-        // end of a run, not a third thing to catch. `StationErrorKind` is
-        // `#[non_exhaustive]`, so an unknown kind lands here too.
+        // `Closed` stays a plain `StationError`: a closed station is the
+        // ordinary end of a run, not a third thing to catch. `StationErrorKind`
+        // is `#[non_exhaustive]`, so an unknown kind lands here too.
         _ => StationError::new_err(message),
     }
 }

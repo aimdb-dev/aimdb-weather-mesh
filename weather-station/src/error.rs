@@ -127,10 +127,10 @@ impl StationError {
             | Self::BrokerUnreachable { .. }
             | Self::BrokerTimeout(_) => StationErrorKind::Broker,
 
-            // Delegated, not flattened: `DbError` already classifies this, and
-            // collapsing it here is what used to force the FFI layers to
-            // re-check `is_closed()` before every publish to recover the
-            // distinction — a second check that could disagree with the one the
+            // Delegated, not flattened: `DbError` already classifies this.
+            // Collapsing it here would cost the FFI layers the `Closed`
+            // distinction, leaving them to re-check `is_closed()` before every
+            // publish — a second check that can disagree with the one the
             // publish itself performs.
             Self::Db(e) => Self::from_db_kind(e.kind()),
 
@@ -171,7 +171,6 @@ mod tests {
     /// This is what lets an FFI layer report a closed station without checking
     /// `is_closed()` before every publish — a second check, on a different
     /// object, that could disagree with the one `SyncProducer::set` performs.
-    /// Both doors used to carry it; deleting it is only sound while this holds.
     #[cfg(feature = "sync")]
     #[test]
     fn a_publish_after_shutdown_is_closed_not_runtime() {

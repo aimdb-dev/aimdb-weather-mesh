@@ -15,9 +15,9 @@
 //! - **The callback thread is aimdb's runtime thread.** After [`ws_init_logging`]
 //!   that thread calls out into the consuming application.
 //!
-//! The log sink is a `log::Log`, not a `tracing` subscriber (design 050): a
-//! `Layer` has nowhere to keep the caller's `user_data`, so [`CSink`] holds
-//! callback and pointer together and `log::set_boxed_logger` decides first-wins.
+//! The log sink is a `log::Log`, not a `tracing` subscriber: a `Layer` has
+//! nowhere to keep the caller's `user_data`, so [`CSink`] holds callback and
+//! pointer together and `log::set_boxed_logger` decides first-wins.
 //!
 //! [`catch_unwind`]: std::panic::catch_unwind
 
@@ -662,8 +662,8 @@ mod tests {
         REFUSED_CALLS.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Design 050's first-wins contract: a refused install must not replace the
-    /// sink already there, and `user_data` must travel with the callback.
+    /// The first-wins contract: a refused install must not replace the sink
+    /// already there, and `user_data` must travel with the callback.
     ///
     /// One test, not four: `set_boxed_logger` is once per process.
     #[test]

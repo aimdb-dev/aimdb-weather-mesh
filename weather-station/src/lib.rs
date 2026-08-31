@@ -90,10 +90,10 @@ pub mod __macro_deps {
 /// Set up tracing for a station binary.
 ///
 /// `station_target` is the station crate's log target (its crate name with
-/// underscores). Three more targets are in the fallback filter because the
-/// station's own name no longer covers what it reports: `weather_station`
-/// carries the handshake and the startup banner, and `aimdb` / `aimdb_core`
-/// carry `ctx.log()`. Without them a misconfigured station looks exactly like a
+/// underscores). Three more targets are in the fallback filter because a
+/// station reports under more than its own name: `weather_station` carries the
+/// handshake and the startup banner, and `aimdb` / `aimdb_core` carry
+/// `ctx.log()`. Without them a misconfigured station looks exactly like a
 /// healthy one — it says nothing either way.
 ///
 /// `RUST_LOG` overrides the whole filter when set.

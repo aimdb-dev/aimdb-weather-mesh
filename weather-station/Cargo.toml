@@ -7,8 +7,7 @@ license = "Apache-2.0"
 publish = false
 
 [features]
-# Host stations. Kept as the default so the templates and every `cargo` command
-# in this workspace behave as before; an MCU build opts out with
+# Host stations. An MCU build opts out with
 # `--no-default-features --features embassy-runtime`.
 default = ["tokio-runtime", "rustls", "init-tracing"]
 
@@ -48,14 +47,13 @@ preflight = ["std", "dep:rumqttc", "dep:tokio"]
 # data path cannot disagree: the pre-flight exists to fail *before* the graph
 # starts, not to fail differently from it.
 #
-# One backend, and rustls rather than native-tls, because a station is built
-# four ways in one workspace and cargo unifies a crate's features across them.
-# With two backends offered, `cargo build --workspace` turned both on at once
-# and each layer needed a `not(feature = "native-tls")` tiebreak to stay
-# well-defined — so the FFI crates, which must not carry a system OpenSSL, were
-# analysed as native-tls builds by anything workspace-wide, rust-analyzer
-# included. rustls is the backend that satisfies every station, so it is the
-# only one. Trust roots still come from the platform, via rustls-native-certs.
+# One backend rather than a choice of two. Stations are built four ways in this
+# workspace and cargo unifies a crate's features across them, so any second
+# backend is enabled alongside this one by every workspace-wide command —
+# including whatever rust-analyzer runs. rustls is the one backend that suits
+# every station: an FFI layer ships into somebody else's process and must not
+# carry a system OpenSSL there. Trust roots still come from the platform, via
+# rustls-native-certs.
 rustls = [
     "preflight",
     "rumqttc/use-rustls",
@@ -68,16 +66,16 @@ rustls = [
 tracing = ["dep:tracing", "aimdb-core/tracing"]
 
 # `init_tracing`, the station-binary convenience that installs the process's
-# subscriber. Split out of `tokio-runtime` (design 050) so a host build can have
-# the Tokio station without `tracing-subscriber`: an FFI layer is a library
-# inside somebody else's process and must not install one. In `default`, so a
-# station binary and every template behave exactly as before.
+# subscriber. Separate from `tokio-runtime` so a host build can have the Tokio
+# station without `tracing-subscriber`: an FFI layer is a library inside
+# somebody else's process and must not install one. In `default`, because a
+# station binary is the application and does get to make that call.
 init-tracing = ["tracing", "dep:tracing-subscriber"]
 
-# Route the crate's own reporting to `log` instead (design 050) — for an FFI
-# layer that hands aimdb a destination rather than installing a subscriber. Must
-# be declared here and not only on aimdb-core: the `log_*` macros expand in this
-# crate, so the arm is selected by *this* crate's features.
+# Route the crate's own reporting to `log` instead — for an FFI layer that hands
+# aimdb a destination rather than installing a subscriber. Must be declared here
+# and not only on aimdb-core: the `log_*` macros expand in this crate, so the
+# arm is selected by *this* crate's features.
 log = ["aimdb-core/log"]
 
 # `StationHandle`: the blocking door, for callers that own their own loop —

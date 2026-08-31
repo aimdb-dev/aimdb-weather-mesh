@@ -83,4 +83,4 @@ The cdylib exports the sixteen symbols and nothing else. The `staticlib` leaks
   each other at startup rather than disagree about a signature at run time.
 - **Size.** Release cdylib 8.1 MB, 6.6 MB stripped. `ldd` shows only libc, libm
   and libgcc_s: the `rustls` backend keeps system OpenSSL out of a consumer's
-  link line, at 4 MB over what a native-TLS build used to cost.
+  link line, and costs about 4 MB to do it.

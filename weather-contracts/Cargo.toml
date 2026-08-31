@@ -14,8 +14,8 @@ simulatable = ["aimdb-data-contracts/simulatable", "rand"]
 migratable = ["aimdb-data-contracts/migratable"]
 # TypeScript bindings for the browser client, emitted at test time by ts-rs.
 #
-# Non-default and std-only by design (decision 3): ts-rs pulls in a derive and
-# a filesystem writer, and an MCU build of this crate must never see either.
+# Non-default and std-only: ts-rs pulls in a derive and a filesystem writer,
+# and an MCU build of this crate must never see either.
 # The export directory is chosen by the caller through `TS_RS_EXPORT_DIR` —
 # see `make ts-bindings` — so no source file hardcodes a path into a sibling
 # crate.

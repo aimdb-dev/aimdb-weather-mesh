@@ -252,9 +252,8 @@ mod tests {
 
     /// Both live schema versions decode through the same entry point, so a hub
     /// configured for [`TemperatureV2`] admits a v1 node without knowing it is
-    /// one. This is the mesh's compatibility guarantee; it was previously
-    /// untested, which meant a change to the `Linkable` impl could have removed
-    /// it silently.
+    /// one. This is the mesh's compatibility guarantee, and it is asserted here
+    /// so a change to the `Linkable` impl cannot remove it silently.
     #[test]
     fn v1_and_v2_payloads_both_decode_as_v2() {
         let v2 = br#"{"schema_version":2,"celsius":21.5,"timestamp":100}"#;
