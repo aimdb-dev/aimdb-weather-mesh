@@ -11,8 +11,9 @@ make station-cpp CONFIG=station.local.toml
 ```
 
 `cpp/station.cpp` owns its loop and calls `publish_*` — what the blocking door
-is for. Swap `fetch()` for a sensor read and the rest stands; libcurl is the
-station's dependency, not the library's. `OPEN_METEO_URL` points at a
+is for. Swap `fetch()` for a sensor read and the rest stands; libcurl and
+nlohmann/json are the station's dependencies, not the library's — `apt install
+libcurl4-openssl-dev nlohmann-json3-dev`. `OPEN_METEO_URL` points at a
 self-hosted Open-Meteo or a fake. Coordinates come from the profile's `[app]`,
 then `WEATHER_LAT`/`WEATHER_LON`, then Vienna; half a pair is an error. SIGINT
 and SIGTERM set a `volatile sig_atomic_t` and nothing else — closing from a

@@ -11,12 +11,13 @@
 // Everything the mesh defines — profile format, slot identity, broker
 // handshake, record keys and topics — is below the C ABI, in the library. What
 // is left here is the part a station of your own would replace: where the
-// readings come from. The two parsers below are deliberately small for the same
-// reason: a station reading a sensor deletes them.
+// readings come from — the JSON parse and the one profile field below go with
+// it.
 
 #include "weather_station.hpp"
 
 #include <curl/curl.h>
+#include <nlohmann/json.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -71,23 +72,26 @@ std::size_t collect(char *data, std::size_t size, std::size_t count, void *into)
     return size * count;
 }
 
-// The number after "<key>":  — enough for the two fields this station reads out
-// of one known response and not a JSON parser. A station reading a sensor has
-// no JSON at all; one talking to a service with a richer response wants a real
-// parser here.
-std::optional<double> number_after(const std::string &body, const std::string &key) {
-    const std::string needle = "\"" + key + "\":";
-    const std::size_t at = body.find(needle);
-    if (at == std::string::npos) {
+// The two readings out of the response's `current` object — not out of the
+// root, where `current_units` carries the same two keys with string values
+// ("°C", "%"). A station reading a sensor has no JSON at all.
+std::optional<Observation> parse_observation(const std::string &body) {
+    // Non-throwing: a malformed body becomes a discarded value rather than an
+    // exception through the poll loop. `find` on a non-object returns `end()`,
+    // so a response of the wrong shape lands in the same place.
+    const nlohmann::json response = nlohmann::json::parse(body, nullptr, false);
+    const auto current = response.find("current");
+    if (current == response.end()) {
         return std::nullopt;
     }
-    const char *from = body.c_str() + at + needle.size();
-    char *end = nullptr;
-    const double value = std::strtod(from, &end);
-    if (end == from) {
+
+    const auto celsius = current->find("temperature_2m");
+    const auto percent = current->find("relative_humidity_2m");
+    if (celsius == current->end() || percent == current->end() || !celsius->is_number() ||
+        !percent->is_number()) {
         return std::nullopt;
     }
-    return value;
+    return Observation{celsius->get<double>(), percent->get<double>()};
 }
 
 std::optional<Observation> fetch(CURL *http, double lat, double lon) {
@@ -110,13 +114,11 @@ std::optional<Observation> fetch(CURL *http, double lat, double lon) {
         return std::nullopt;
     }
 
-    const std::optional<double> celsius = number_after(body, "temperature_2m");
-    const std::optional<double> percent = number_after(body, "relative_humidity_2m");
-    if (!celsius || !percent) {
+    const std::optional<Observation> reading = parse_observation(body);
+    if (!reading) {
         std::fprintf(stderr, "WARN  station: Open-Meteo response had no reading\n");
-        return std::nullopt;
     }
-    return Observation{*celsius, *percent};
+    return reading;
 }
 
 // `key = <number>` inside the profile's [app] table.

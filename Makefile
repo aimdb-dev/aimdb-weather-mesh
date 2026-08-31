@@ -63,7 +63,7 @@ help:
 	@printf "\n"
 	@printf "  $(YELLOW)FFI stations:$(NC)\n"
 	@printf "    station-py     Run the Python station (CONFIG=station.local.toml)\n"
-	@printf "    station-cpp    Run the C++ station (CONFIG=station.local.toml, needs libcurl)\n"
+	@printf "    station-cpp    Run the C++ station (CONFIG=station.local.toml, needs libcurl + nlohmann)\n"
 	@printf "\n"
 	@printf "  $(YELLOW)Browser client:$(NC)\n"
 	@printf "    wasm           Build the npm package with wasm-pack (needs wasm-pack)\n"
@@ -90,9 +90,9 @@ station-py:
 
 ## Run the C++ station — see weather-station-cpp/README.md
 ##
-## Linked against the cdylib the way a consuming build would link it. libcurl is
-## this station's own dependency, not the library's: it is where the readings
-## come from, which is the half a station of your own replaces.
+## Linked against the cdylib the way a consuming build would link it. libcurl and
+## nlohmann/json are this station's own dependencies, not the library's: they are
+## where the readings come from, which is the half a station of your own replaces.
 station-cpp:
 	@printf "$(GREEN)Building the C ABI library...$(NC)\n"
 	cargo build -p weather-station-cpp
