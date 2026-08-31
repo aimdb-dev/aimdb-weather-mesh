@@ -17,8 +17,9 @@ at a self-hosted Open-Meteo or a fake. Coordinates come from the profile's
 error. SIGINT and SIGTERM set an event the loop waits on and nothing else —
 `close` being safe from another thread is not the same as safe from a handler.
 
-Needs 3.11 for `tomllib`, or `pip install tomli` on 3.9/3.10, and the module on
-`PYTHONPATH` until there is a wheel.
+Needs the module on `PYTHONPATH` until there is a wheel. No TOML parser: the
+profile is read once, below the boundary, and `station.lat` / `station.lon` hand
+the coordinates back.
 
 ## Using it
 

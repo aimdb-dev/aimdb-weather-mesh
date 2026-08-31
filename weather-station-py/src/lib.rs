@@ -154,6 +154,25 @@ impl PyStation {
         self.inner.mesh_slot().name().to_owned()
     }
 
+    /// The coordinates the mesh published for this station, or `None` when the
+    /// profile omits them.
+    ///
+    /// Read back through the boundary rather than re-parsed: `open_profile`
+    /// already parsed `[app]`, and a second parse could disagree with the
+    /// station it is publishing through.
+    ///
+    /// Still answers after `close()` — see [`slot`](Self::slot).
+    #[getter]
+    fn lat(&self) -> Option<f64> {
+        self.inner.mesh_slot().lat()
+    }
+
+    /// See [`lat`](Self::lat).
+    #[getter]
+    fn lon(&self) -> Option<f64> {
+        self.inner.mesh_slot().lon()
+    }
+
     /// Whether `close()` has run.
     #[getter]
     fn closed(&self) -> bool {

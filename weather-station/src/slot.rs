@@ -28,6 +28,8 @@ pub const MESH_BUFFER_CAPACITY: usize = 10;
 pub struct MeshSlot {
     slot: u16,
     name: String,
+    lat: Option<f64>,
+    lon: Option<f64>,
     client_id: String,
     broker: BrokerCredential,
     temperature_key: StringKey,
@@ -72,6 +74,8 @@ impl MeshSlot {
         Ok(Self {
             slot,
             name: app.name.clone(),
+            lat: app.lat,
+            lon: app.lon,
             client_id,
             broker: BrokerCredential {
                 url: broker.url.clone(),
@@ -110,6 +114,21 @@ impl MeshSlot {
     /// The station name from the profile's `[app]` table.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The coordinates the mesh published for this station, from the profile's
+    /// `[app]` table. `None` when the profile omits them.
+    ///
+    /// Held here so the profile is parsed once, by whoever opens it: a station
+    /// on a foreign runtime reads them back through the boundary rather than
+    /// re-parsing the file with a scanner of its own.
+    pub fn lat(&self) -> Option<f64> {
+        self.lat
+    }
+
+    /// See [`lat`](Self::lat).
+    pub fn lon(&self) -> Option<f64> {
+        self.lon
     }
 
     /// The MQTT client id this station connects as, `weather-station-<n>`.
@@ -271,6 +290,8 @@ mod tests {
         MeshSlot {
             slot,
             name: "test".to_string(),
+            lat: None,
+            lon: None,
             client_id: format!("weather-station-{slot}"),
             broker: BrokerCredential {
                 url: "mqtt://localhost:1883".to_string(),

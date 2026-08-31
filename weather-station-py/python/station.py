@@ -34,14 +34,6 @@ from pathlib import Path
 
 import weather_station
 
-try:  # 3.11+
-    import tomllib
-except ModuleNotFoundError:  # 3.9, 3.10 — the door is abi3-py39
-    try:
-        import tomli as tomllib
-    except ModuleNotFoundError:
-        raise SystemExit("this station needs Python 3.11+, or `pip install tomli`")
-
 LOG = logging.getLogger("station")
 
 # Open-Meteo refreshes roughly every 15 minutes; polling every 5 keeps the slot
@@ -79,6 +71,9 @@ def resolve_location(
     location the mesh published for it, so an environment variable cannot move
     it on the public map. Coordinates are taken as a pair; half a location is an
     error rather than a silent mix of two sources.
+
+    The profile pair comes from the open station: `[app]` is parsed once, below
+    the boundary, by whoever opened the file.
     """
     lat, lon = profile
     if lat is not None and lon is not None:
@@ -95,18 +90,6 @@ def resolve_location(
         raise SystemExit("set WEATHER_LAT and WEATHER_LON together, or neither")
 
     return DEFAULT_LAT, DEFAULT_LON, "default: Vienna"
-
-
-def profile_location(config: Path) -> tuple[float | None, float | None]:
-    """The station's own two fields out of the profile.
-
-    The mesh tables in the same file are read below the boundary, by
-    `Station.open_profile`. This reads only what this station needs, so the two
-    never disagree about the parts that matter.
-    """
-    with open(config, "rb") as f:
-        app = tomllib.load(f).get("app", {})
-    return app.get("lat"), app.get("lon")
 
 
 def fetch(lat: float, lon: float) -> tuple[float, float]:
@@ -153,15 +136,15 @@ def main() -> int:
     # logging.getLogger("aimdb_core").setLevel(logging.WARNING)
     weather_station.init_logging()
 
-    lat, lon, source = resolve_location(
-        profile_location(args.config),
-        (env_coord("WEATHER_LAT"), env_coord("WEATHER_LON")),
-    )
-
     stop = stop_on_signals()
 
     with weather_station.Station.open_profile(args.config) as station:
         LOG.info("joined slot %d as %r", station.slot, station.name)
+
+        lat, lon, source = resolve_location(
+            (station.lat, station.lon),
+            (env_coord("WEATHER_LAT"), env_coord("WEATHER_LON")),
+        )
         LOG.info("location %.2f, %.2f (%s)", lat, lon, source)
 
         while not stop.is_set():

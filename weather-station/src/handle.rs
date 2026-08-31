@@ -319,6 +319,11 @@ mod tests {
         assert_eq!(profile.station_id, "slot-17");
         assert_eq!(profile.app.name, "graz-office");
         assert_eq!(profile.broker.username, "station-17");
+        // The coordinates cross the FFI boundary as `ws_station_lat`/`_lon`, so
+        // this parse is the only one: a station on a foreign runtime reads them
+        // back rather than scanning the file again.
+        assert_eq!(profile.app.lat, Some(47.07));
+        assert_eq!(profile.app.lon, Some(15.44));
     }
 
     #[test]

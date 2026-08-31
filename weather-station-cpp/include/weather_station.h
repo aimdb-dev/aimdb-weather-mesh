@@ -83,6 +83,12 @@ const char *ws_station_name(const ws_station *station);
 
 /* Whether the station has been closed. True for NULL. Reads an atomic, so it
  * is safe to call while another thread is inside ws_station_close. */
+/* The coordinates the profile issued, written into *out. False when the profile
+ * omits them, when station is NULL, or when out is NULL — *out is untouched.
+ * The mesh parses [app] once; do not re-read the file to find these. */
+bool ws_station_lat(const ws_station *station, double *out);
+bool ws_station_lon(const ws_station *station, double *out);
+
 bool ws_station_is_closed(const ws_station *station);
 
 /* Stop the station and shut its runtime thread down.

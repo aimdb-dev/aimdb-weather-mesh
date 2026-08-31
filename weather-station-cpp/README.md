@@ -24,7 +24,7 @@ handler would run aimdb's shutdown on the signal stack.
 Rust cannot export C++: no class, `std::string` or `std::function` has an ABI
 stable even between two builds of one compiler. So:
 
-- `include/weather_station.h` — the C ABI. Fourteen `ws_*` symbols, opaque
+- `include/weather_station.h` — the C ABI. Sixteen `ws_*` symbols, opaque
   pointer, status codes, ownership stated in prose. This is what the library
   exports.
 - `include/weather_station.hpp` — RAII, exception hierarchy, move-only
@@ -34,7 +34,7 @@ stable even between two builds of one compiler. So:
 The rule generalises: the FFI boundary carries the mechanism, the
 language-shaped API is written in that language.
 
-The cdylib exports the fourteen symbols and nothing else. The `staticlib` leaks
+The cdylib exports the sixteen symbols and nothing else. The `staticlib` leaks
 47,878 text symbols and needs
 `-lssl -lcrypto -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc`.
 

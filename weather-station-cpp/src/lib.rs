@@ -303,6 +303,44 @@ pub unsafe extern "C" fn ws_station_name(handle: *const ws_station) -> *const c_
     }
 }
 
+/// Writes the coordinate the profile issued into `out` and returns `true`, or
+/// returns `false` and leaves `out` untouched when the profile carries none —
+/// which is also the answer for a null handle or a null `out`.
+///
+/// The mesh's own parse of `[app]` is the only one: a caller that re-read the
+/// file to find these could disagree with the station it is publishing through.
+///
+/// # Safety
+/// `handle` must be null or a live station pointer; `out` must be null or point
+/// at a writable `double`.
+#[no_mangle]
+pub unsafe extern "C" fn ws_station_lat(handle: *const ws_station, out: *mut f64) -> bool {
+    write_coordinate(station(handle).and_then(|s| s.inner.mesh_slot().lat()), out)
+}
+
+/// The station's longitude — see [`ws_station_lat`].
+///
+/// # Safety
+/// As [`ws_station_lat`].
+#[no_mangle]
+pub unsafe extern "C" fn ws_station_lon(handle: *const ws_station, out: *mut f64) -> bool {
+    write_coordinate(station(handle).and_then(|s| s.inner.mesh_slot().lon()), out)
+}
+
+/// `Option<f64>` as an out-parameter and a flag.
+///
+/// # Safety
+/// `out` must be null or point at a writable `double`.
+unsafe fn write_coordinate(value: Option<f64>, out: *mut f64) -> bool {
+    match value {
+        Some(value) if !out.is_null() => {
+            *out = value;
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Whether the station has been closed; `true` for a null handle. Never takes
 /// a lock — the answer must not queue behind a shutdown.
 ///

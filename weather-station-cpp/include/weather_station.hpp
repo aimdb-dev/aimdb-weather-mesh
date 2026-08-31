@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -169,9 +170,20 @@ public:
         return name == nullptr ? std::string() : std::string(name);
     }
 
+    // The coordinates the profile issued, or nullopt when it omits them. The
+    // mesh already parsed [app] to open this station; reading them back here is
+    // what keeps a C++ station from needing a TOML parser of its own.
+    std::optional<double> lat() const noexcept { return coordinate(ws_station_lat); }
+    std::optional<double> lon() const noexcept { return coordinate(ws_station_lon); }
+
     bool closed() const noexcept { return ws_station_is_closed(handle_); }
 
 private:
+    std::optional<double> coordinate(bool (*get)(const ws_station *, double *)) const noexcept {
+        double value = 0.0;
+        return get(handle_, &value) ? std::optional<double>(value) : std::nullopt;
+    }
+
     ws_station *handle_ = nullptr;
 };
 

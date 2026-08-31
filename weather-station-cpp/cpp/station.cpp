@@ -11,22 +11,18 @@
 // Everything the mesh defines — profile format, slot identity, broker
 // handshake, record keys and topics — is below the C ABI, in the library. What
 // is left here is the part a station of your own would replace: where the
-// readings come from — the JSON parse and the one profile field below go with
-// it.
+// readings come from — the JSON parse below goes with it.
 
 #include "weather_station.hpp"
 
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 
-#include <atomic>
 #include <chrono>
-#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <optional>
 #include <string>
 #include <thread>
@@ -121,51 +117,6 @@ std::optional<Observation> fetch(CURL *http, double lat, double lon) {
     return reading;
 }
 
-// `key = <number>` inside the profile's [app] table.
-//
-// The mesh tables in the same file are parsed below the ABI, by
-// ws_station_open_profile. This reads only this station's own two fields, so
-// the two cannot disagree about the parts that matter — and it is a line
-// scanner, not a TOML parser: no quoting, no inline tables, no multi-line
-// values. Enough for a `lat = 47.07` the provisioning service wrote.
-std::optional<double> profile_double(const std::filesystem::path &config, const std::string &key) {
-    std::ifstream file(config);
-    if (!file) {
-        return std::nullopt;
-    }
-
-    bool in_app = false;
-    std::string line;
-    while (std::getline(file, line)) {
-        const std::size_t comment = line.find('#');
-        if (comment != std::string::npos) {
-            line.resize(comment);
-        }
-        const std::size_t first = line.find_first_not_of(" \t\r");
-        if (first == std::string::npos) {
-            continue;
-        }
-        if (line[first] == '[') {
-            in_app = line.compare(first, 5, "[app]") == 0;
-            continue;
-        }
-        if (!in_app || line.compare(first, key.size(), key) != 0) {
-            continue;
-        }
-        const std::size_t equals = line.find('=', first + key.size());
-        if (equals == std::string::npos) {
-            continue;
-        }
-        const char *from = line.c_str() + equals + 1;
-        char *end = nullptr;
-        const double value = std::strtod(from, &end);
-        if (end != from) {
-            return value;
-        }
-    }
-    return std::nullopt;
-}
-
 // One coordinate from the environment, refusing a value that is set but
 // unparseable rather than falling back to a different location.
 std::optional<double> env_coord(const char *var) {
@@ -192,6 +143,9 @@ struct Location {
 // them: a joined station reports from the location the mesh published for it,
 // so an environment variable cannot move it on the public map. Coordinates are
 // taken as a pair; half a location is an error rather than a silent mix.
+//
+// The profile pair comes from the open station — `[app]` is parsed once, below
+// the ABI, by whoever opened the file.
 Location resolve_location(std::optional<double> profile_lat, std::optional<double> profile_lon,
                           std::optional<double> env_lat, std::optional<double> env_lon) {
     if (profile_lat && profile_lon) {
@@ -247,9 +201,6 @@ int main(int argc, char **argv) {
     std::signal(SIGTERM, on_signal);
 
     const std::filesystem::path profile(config);
-    const Location location =
-        resolve_location(profile_double(profile, "lat"), profile_double(profile, "lon"),
-                         env_coord("WEATHER_LAT"), env_coord("WEATHER_LON"));
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
     CURL *http = curl_easy_init();
@@ -266,6 +217,10 @@ int main(int argc, char **argv) {
         const weather_station::Station station(profile);
         std::fprintf(stderr, "INFO  station: joined slot %u as '%s'\n",
                      static_cast<unsigned>(station.slot()), station.name().c_str());
+
+        const Location location = resolve_location(station.lat(), station.lon(),
+                                                   env_coord("WEATHER_LAT"),
+                                                   env_coord("WEATHER_LON"));
         std::fprintf(stderr, "INFO  station: location %.2f, %.2f (%s)\n", location.lat,
                      location.lon, location.source);
 
