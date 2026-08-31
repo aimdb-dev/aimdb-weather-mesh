@@ -18,9 +18,9 @@ crate-type = ["cdylib"]
 # 050): this is a library inside somebody else's interpreter, so it must not
 # carry `tracing-subscriber` or the convenience that installs a subscriber.
 #
-# `rustls` because this build must not carry a system OpenSSL into somebody
-# else's interpreter. Turning defaults off means the backend has to be named
-# here or `mqtts://` silently has none; the C door made the same call.
+# `rustls` is the crate's only TLS backend, so this is not a choice against
+# another — but with defaults off it has to be named here, or `mqtts://`
+# silently has none. The C door made the same call.
 weather-station = { path = "../weather-station", default-features = false, features = [
     "tokio-runtime",
     "rustls",

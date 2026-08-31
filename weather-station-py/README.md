@@ -92,7 +92,7 @@ own levels do the fine-grained work above it.
 - **The dependency graph is already wheel-shaped.** `weather-station` with
   `default-features = false` and without `init-tracing`, so neither `tracing`
   nor `tracing-subscriber` appears in `cargo tree`. The TLS backend is named
-  here and is `rustls`: a wheel must not hand its host interpreter a second
-  OpenSSL.
+  here and is `rustls` — the crate's only backend, so that a wheel never hands
+  its host interpreter a second OpenSSL.
 - **`#[pymodule] fn weather_station` shadows the `weather_station` crate**
   inside `src/lib.rs`, hence the `::` prefixes. The wheel inherits that.

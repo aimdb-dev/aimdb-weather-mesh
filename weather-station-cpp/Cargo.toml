@@ -18,10 +18,11 @@ name = "weather_station_ffi"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-# `rustls` rather than the workspace default: this crate ships as a shared
-# library into somebody else's process, which must not be handed a second
-# OpenSSL. `--no-default-features` is what stops `native-tls` arriving through
-# the default set alongside it.
+# `--no-default-features` is for `init-tracing`, not for TLS: `rustls` is the
+# crate's only backend now, so the default set would bring the right one. What
+# it would also bring is the subscriber-installing convenience, which a shared
+# library inside somebody else's process must not have — hence the explicit
+# list. Naming `rustls` here keeps `mqtts://` working with defaults off.
 weather-station = { path = "../weather-station", default-features = false, features = [
     "tokio-runtime",
     "rustls",

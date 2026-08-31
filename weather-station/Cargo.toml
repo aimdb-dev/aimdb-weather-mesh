@@ -10,7 +10,7 @@ publish = false
 # Host stations. Kept as the default so the templates and every `cargo` command
 # in this workspace behave as before; an MCU build opts out with
 # `--no-default-features --features embassy-runtime`.
-default = ["tokio-runtime", "native-tls", "init-tracing"]
+default = ["tokio-runtime", "rustls", "init-tracing"]
 
 # Tokio host station: the `Station` facade, `init_tracing`, and the pre-flight
 # probe. Mutually exclusive with `embassy-runtime`.
@@ -45,14 +45,17 @@ preflight = ["std", "dep:rumqttc", "dep:tokio"]
 # --- TLS backend for `mqtts://` ---
 #
 # Selected here and passed down, so the pre-flight probe and the connector's
-# data path cannot disagree — two backends in one process means two TLS stacks,
-# and the pre-flight exists to fail *before* the graph starts, not to fail
-# differently from it.
+# data path cannot disagree: the pre-flight exists to fail *before* the graph
+# starts, not to fail differently from it.
 #
-# `native-tls` is the default, which is what every station has always built.
-# `rustls` is for a build that must not carry a system OpenSSL: an FFI layer
-# shipped as a shared library, above all.
-native-tls = ["preflight", "rumqttc/use-native-tls", "aimdb-mqtt-connector/tokio-native-tls"]
+# One backend, and rustls rather than native-tls, because a station is built
+# four ways in one workspace and cargo unifies a crate's features across them.
+# With two backends offered, `cargo build --workspace` turned both on at once
+# and each layer needed a `not(feature = "native-tls")` tiebreak to stay
+# well-defined — so the FFI crates, which must not carry a system OpenSSL, were
+# analysed as native-tls builds by anything workspace-wide, rust-analyzer
+# included. rustls is the backend that satisfies every station, so it is the
+# only one. Trust roots still come from the platform, via rustls-native-certs.
 rustls = [
     "preflight",
     "rumqttc/use-rustls",
@@ -121,8 +124,8 @@ tracing-subscriber = { version = "0.3", features = [
 # Pre-flight CONNECT probe only, so a revoked credential fails at startup; the
 # data path goes through aimdb-mqtt-connector. Same feature set as the
 # connector's own rumqttc.
-# Backend chosen by the `native-tls` / `rustls` features above, not here — see
-# the note on `aimdb-mqtt-connector`'s rumqttc for why `default-features` is off.
+# Backend chosen by the `rustls` feature above, not here — see the note on
+# `aimdb-mqtt-connector`'s rumqttc for why `default-features` is off.
 rumqttc = { version = "0.25", default-features = false, optional = true }
 
 # Platform trust roots for the rustls backend, loaded explicitly so a missing

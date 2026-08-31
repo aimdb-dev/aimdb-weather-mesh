@@ -37,11 +37,11 @@ pub(crate) async fn preflight_broker_check(
     opts.set_credentials(&broker.username, &broker.password);
     // Gated whole, not just the configuration: rumqttc gates `TlsConfiguration`
     // and `Transport::Tls` on having a backend at all.
-    #[cfg(any(feature = "native-tls", feature = "rustls"))]
+    #[cfg(feature = "rustls")]
     if tls {
         opts.set_transport(rumqttc::Transport::Tls(preflight_tls()?));
     }
-    #[cfg(not(any(feature = "native-tls", feature = "rustls")))]
+    #[cfg(not(feature = "rustls"))]
     if tls {
         return Err(no_tls_backend());
     }
@@ -134,16 +134,11 @@ pub fn redact_url(url: &str) -> String {
 
 /// The TLS configuration the pre-flight probe uses for `mqtts://`.
 ///
-/// Deliberately the same backend the connector's data path uses — the features
-/// are wired so they cannot diverge. Two backends in one process would mean two
-/// TLS stacks, and a pre-flight that succeeded where the data path failed would
-/// defeat the point of probing at all.
-#[cfg(all(feature = "preflight", feature = "native-tls"))]
-fn preflight_tls() -> Result<rumqttc::TlsConfiguration, StationError> {
-    Ok(rumqttc::TlsConfiguration::Native)
-}
-
-#[cfg(all(feature = "preflight", feature = "rustls", not(feature = "native-tls")))]
+/// Deliberately the same backend the connector's data path uses — the `rustls`
+/// feature turns both on together, so a pre-flight that succeeded where the
+/// data path failed cannot happen. That is why the crate offers one backend
+/// rather than a choice; see the manifest.
+#[cfg(all(feature = "preflight", feature = "rustls"))]
 fn preflight_tls() -> Result<rumqttc::TlsConfiguration, StationError> {
     use rumqttc::tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
@@ -169,14 +164,11 @@ fn preflight_tls() -> Result<rumqttc::TlsConfiguration, StationError> {
 }
 
 /// No backend selected: `mqtt://` still works, `mqtts://` says why it does not.
-#[cfg(all(
-    feature = "preflight",
-    not(any(feature = "native-tls", feature = "rustls"))
-))]
+#[cfg(all(feature = "preflight", not(feature = "rustls")))]
 fn no_tls_backend() -> StationError {
     StationError::BrokerUrl(alloc::string::String::from(
         "this station was built without a TLS backend, so it cannot reach an \
-         mqtts:// broker — rebuild with the `rustls` or `native-tls` feature",
+         mqtts:// broker — rebuild with the `rustls` feature",
     ))
 }
 
