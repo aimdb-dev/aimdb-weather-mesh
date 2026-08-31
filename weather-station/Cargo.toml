@@ -28,7 +28,9 @@ tokio-runtime = [
 # see the crate docs for why the workspace, not this manifest, is where they
 # would have to land.
 
-std = ["aimdb-core/std", "weather-contracts/std", "aimdb-data-contracts/std"]
+# `dep:toml` because `load_profile` lives here: reading a `station.toml` is the
+# mesh's rule, not a station's, and every host door goes through the same one.
+std = ["aimdb-core/std", "weather-contracts/std", "aimdb-data-contracts/std", "dep:toml"]
 
 # The pre-flight CONNECT probe: one round-trip before the graph is built, so a
 # revoked slot says so at startup instead of retrying in silence.
@@ -78,7 +80,7 @@ log = ["aimdb-core/log"]
 # `StationHandle`: the blocking door, for callers that own their own loop —
 # a Rust thread, or a Python/C/C++ station through an FFI layer above this
 # crate. Host-only: `aimdb-sync` is Tokio-only by design.
-sync = ["tokio-runtime", "dep:aimdb-sync", "dep:toml"]
+sync = ["tokio-runtime", "dep:aimdb-sync"]
 
 [dependencies]
 # `migratable` is not optional here: Temperature's `Linkable` impl (the
@@ -103,6 +105,11 @@ serde = { version = "1.0", default-features = false, features = [
 ] }
 thiserror = { version = "2", default-features = false }
 
+# --- std only ---
+# `load_profile`. Optional so an MCU build, which has no filesystem to read a
+# profile off, does not carry a TOML parser.
+toml = { version = "0.8", optional = true }
+
 # --- tokio-runtime only ---
 aimdb-tokio-adapter = { path = "../../aimdb/aimdb-tokio-adapter", optional = true }
 tracing = { version = "0.1", default-features = false, optional = true }
@@ -125,7 +132,6 @@ tokio = { version = "1", features = ["time"], optional = true }
 
 # --- sync only ---
 aimdb-sync = { path = "../../aimdb/aimdb-sync", optional = true }
-toml = { version = "0.8", optional = true }
 
 [dev-dependencies]
 toml = "0.8"

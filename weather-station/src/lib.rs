@@ -55,6 +55,8 @@ extern crate alloc;
 extern crate std;
 
 mod broker;
+#[cfg(feature = "std")]
+mod clock;
 mod error;
 #[cfg(feature = "sync")]
 mod handle;
@@ -64,9 +66,13 @@ mod slot;
 mod station;
 
 pub use broker::redact_url;
+#[cfg(feature = "std")]
+pub use clock::check_wall_clock;
 pub use error::{StationError, StationErrorKind};
 #[cfg(feature = "sync")]
 pub use handle::StationHandle;
+#[cfg(feature = "std")]
+pub use profile::load_profile;
 pub use profile::{
     check_profile_version, slot_from_station_id, AppProfile, BrokerProfile, PROFILE_VERSION,
 };

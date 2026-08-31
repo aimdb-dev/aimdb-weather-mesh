@@ -78,12 +78,12 @@ pub enum StationError {
     Db(#[from] aimdb_core::DbError),
 
     /// The profile file could not be read.
-    #[cfg(feature = "sync")]
+    #[cfg(feature = "std")]
     #[error("cannot read the station profile at {path}: {reason}")]
     ProfileUnreadable { path: String, reason: String },
 
     /// The profile file is not a station profile.
-    #[cfg(feature = "sync")]
+    #[cfg(feature = "std")]
     #[error("the station profile at {path} is malformed: {reason}")]
     ProfileMalformed { path: String, reason: String },
 
@@ -98,7 +98,7 @@ pub enum StationError {
     GraphStartTimeout(core::time::Duration),
 
     /// The system clock is unusable, so readings would carry no timestamp.
-    #[cfg(feature = "sync")]
+    #[cfg(feature = "std")]
     #[error(
         "the system clock is before the Unix epoch, so readings would carry no \
          usable timestamp — set the clock (or NTP) before starting the station"
@@ -134,13 +134,16 @@ impl StationError {
             // publish itself performs.
             Self::Db(e) => Self::from_db_kind(e.kind()),
 
-            #[cfg(feature = "sync")]
+            #[cfg(feature = "std")]
             Self::ProfileUnreadable { .. } | Self::ProfileMalformed { .. } => {
                 StationErrorKind::Profile
             }
 
+            #[cfg(feature = "std")]
+            Self::NoWallClock => StationErrorKind::Runtime,
+
             #[cfg(feature = "sync")]
-            Self::GraphStartTimeout(_) | Self::NoWallClock => StationErrorKind::Runtime,
+            Self::GraphStartTimeout(_) => StationErrorKind::Runtime,
 
             // `SyncError::RuntimeShutdown` and `ForkedChild` are already
             // `DbErrorKind::Closed`; this is the path a publish after shutdown
@@ -213,7 +216,7 @@ mod tests {
             StationError::BrokerTimeout("x".into()).kind(),
             StationErrorKind::Broker
         );
-        #[cfg(feature = "sync")]
+        #[cfg(feature = "std")]
         assert_eq!(StationError::NoWallClock.kind(), StationErrorKind::Runtime);
     }
 }

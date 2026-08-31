@@ -27,7 +27,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
 use weather_contracts::{HumidityV1, TemperatureV2};
-use weather_station::{check_profile_version, AppProfile, BrokerProfile, Station};
+use weather_station::{load_profile, AppProfile, BrokerProfile, Station};
 
 /// Open-Meteo refreshes roughly every 15 minutes; polling every 5 keeps the
 /// slot current without hammering a free API.
@@ -44,9 +44,11 @@ struct Cli {
 
 /// The station profile: the mesh's tables, and nothing of this station's own —
 /// the coordinates it needs are already in `[app]`.
+///
+/// No `profile_version`: [`load_profile`] gates it before this struct is
+/// deserialized, so a station holds only what it reads.
 #[derive(Debug, Deserialize)]
 struct StationProfile {
-    profile_version: u64,
     station_id: String,
     broker: BrokerProfile,
     app: AppProfile,
@@ -89,8 +91,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     weather_station::init_tracing("weather_station_openmeteo");
 
     let cli = Cli::parse();
-    let profile: StationProfile = toml::from_str(&std::fs::read_to_string(&cli.config)?)?;
-    check_profile_version(profile.profile_version)?;
+    let profile: StationProfile = load_profile(&cli.config)?;
 
     let (lat, lon, location_source) = resolve_location(
         (profile.app.lat, profile.app.lon),

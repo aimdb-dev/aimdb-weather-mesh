@@ -4,7 +4,7 @@ use alloc::string::{String, ToString};
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use aimdb_core::{AimDbBuilder, RecordKey};
 use aimdb_sync::{AimDbBuilderSyncExt, AimDbHandle, SyncProducer};
@@ -12,7 +12,8 @@ use aimdb_tokio_adapter::TokioAdapter;
 use serde::Deserialize;
 use weather_contracts::{HumidityV1, TemperatureV2};
 
-use crate::{check_profile_version, AppProfile, BrokerProfile, MeshSlot, StationError};
+use crate::clock::unix_millis;
+use crate::{load_profile, AppProfile, BrokerProfile, MeshSlot, StationError};
 
 /// How long [`StationHandle::open`] waits for the graph to start pumping.
 ///
@@ -68,7 +69,6 @@ pub struct StationHandle {
 /// mesh's side of the boundary.
 #[derive(Debug, Deserialize)]
 struct MeshProfile {
-    profile_version: u64,
     station_id: String,
     broker: BrokerProfile,
     app: AppProfile,
@@ -77,22 +77,11 @@ struct MeshProfile {
 impl StationHandle {
     /// Join the mesh from a `station.toml` path.
     ///
-    /// Reads the mesh tables, checks the profile version, performs the
-    /// handshake and starts the graph. Tables the mesh does not define are
-    /// ignored, so a profile carrying a station's own extras still opens.
+    /// Reads the mesh tables through [`load_profile`], performs the handshake
+    /// and starts the graph. Tables the mesh does not define are ignored, so a
+    /// profile carrying a station's own extras still opens.
     pub fn open_profile(path: impl AsRef<Path>) -> Result<Self, StationError> {
-        let path = path.as_ref();
-        let raw = std::fs::read_to_string(path).map_err(|e| StationError::ProfileUnreadable {
-            path: path.display().to_string(),
-            reason: e.to_string(),
-        })?;
-        let profile: MeshProfile =
-            toml::from_str(&raw).map_err(|e| StationError::ProfileMalformed {
-                path: path.display().to_string(),
-                reason: e.to_string(),
-            })?;
-
-        check_profile_version(profile.profile_version)?;
+        let profile: MeshProfile = load_profile(path)?;
         Self::open(&profile.station_id, &profile.app, &profile.broker)
     }
 
@@ -241,17 +230,6 @@ impl StationHandle {
     }
 }
 
-/// Wall-clock milliseconds.
-///
-/// A reading with no usable timestamp is worse than no reading: the hub keys
-/// its dew-point join off them.
-fn unix_millis() -> Result<u64, StationError> {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .map_err(|_| StationError::NoWallClock)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,12 +306,5 @@ mod tests {
             StationError::UnsupportedProfileVersion { found: 99, .. }
         ));
         let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn readings_carry_a_wall_clock_timestamp() {
-        let now = unix_millis().unwrap();
-        // Sanity: milliseconds since the epoch, not seconds and not zero.
-        assert!(now > 1_700_000_000_000);
     }
 }
