@@ -5,12 +5,13 @@ distributed weather network in which many small stations publish observations
 over MQTT and one hub aggregates them into a queryable AimDB instance.
 
 ```
-   ┌──────────────────────────┐   ┌──────────────────────────┐
-   │ weather-station-openmeteo│   │ weather-station-… (yours)│
-   │ slot 2                   │   │ slot 17                  │
-   └────────────┬─────────────┘   └────────────┬─────────────┘
-                │ publish station/<n>/…        │
-                └──────────────┬───────────────┘
+┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+│ openmeteo   │ │ knx         │ │ py / cpp    │ │ yours       │
+│ cloud API   │ │ KNX bus     │ │ FFI         │ │ your source │
+│ slot 2      │ │ slot 3      │ │ slot 4      │ │ slot 17     │
+└──────┬──────┘ └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
+       └───────────────┴───────┬───────┴───────────────┘
+                               │ publish station/<n>/…
                                ▼
                       ┌────────────────┐
                       │  MQTT broker   │
