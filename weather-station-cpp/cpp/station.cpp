@@ -11,7 +11,7 @@
 // Everything the mesh defines — profile format, slot identity, broker
 // handshake, record keys and topics — is below the C ABI, in the library. What
 // is left here is the part a station of your own would replace: where the
-// readings come from — the JSON parse below goes with it.
+// readings come from.
 
 #include "weather_station.hpp"
 
@@ -55,8 +55,8 @@ void log_sink(int level, const char *target, const char *message, void *) {
     std::fprintf(stderr, "%-5s %s: %s\n", name, target, message);
 }
 
-// The two numbers `fetch` returns from one Open-Meteo response. A station
-// reading a BME280 fills the same struct from one transaction.
+// The two values `fetch` returns from one Open-Meteo response — the shape a
+// single sensor transaction yields too.
 struct Observation {
     double celsius;
     double percent;
@@ -68,13 +68,13 @@ std::size_t collect(char *data, std::size_t size, std::size_t count, void *into)
     return size * count;
 }
 
-// The two readings out of the response's `current` object — not out of the
-// root, where `current_units` carries the same two keys with string values
-// ("°C", "%"). A station reading a sensor has no JSON at all.
+// The reading out of the response's `current` object. Both field names occur
+// twice in a response: under `current` with the numbers, and under
+// `current_units` with the unit strings "°C" and "%" — so the lookup starts at
+// `current` rather than at the root.
 std::optional<Observation> parse_observation(const std::string &body) {
-    // Non-throwing: a malformed body becomes a discarded value rather than an
-    // exception through the poll loop. `find` on a non-object returns `end()`,
-    // so a response of the wrong shape lands in the same place.
+    // Non-throwing, so a body that is malformed or shaped unexpectedly ends the
+    // poll rather than the process.
     const nlohmann::json response = nlohmann::json::parse(body, nullptr, false);
     const auto current = response.find("current");
     if (current == response.end()) {
@@ -143,9 +143,6 @@ struct Location {
 // them: a joined station reports from the location the mesh published for it,
 // so an environment variable cannot move it on the public map. Coordinates are
 // taken as a pair; half a location is an error rather than a silent mix.
-//
-// The profile pair comes from the open station — `[app]` is parsed once, below
-// the ABI, by whoever opened the file.
 Location resolve_location(std::optional<double> profile_lat, std::optional<double> profile_lon,
                           std::optional<double> env_lat, std::optional<double> env_lon) {
     if (profile_lat && profile_lon) {
@@ -211,9 +208,8 @@ int main(int argc, char **argv) {
 
     int status = 0;
     try {
-        // Joins the mesh, or throws: a revoked slot and a bad profile are
-        // different exceptions, which is what the classification below the ABI
-        // is for.
+        // Joins the mesh, or throws: a revoked slot and a malformed profile
+        // raise different exceptions.
         const weather_station::Station station(profile);
         std::fprintf(stderr, "INFO  station: joined slot %u as '%s'\n",
                      static_cast<unsigned>(station.slot()), station.name().c_str());

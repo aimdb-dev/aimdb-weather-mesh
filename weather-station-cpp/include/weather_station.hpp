@@ -171,8 +171,8 @@ public:
     }
 
     // The coordinates the profile issued, or nullopt when it omits them. The
-    // mesh already parsed [app] to open this station; reading them back here is
-    // what keeps a C++ station from needing a TOML parser of its own.
+    // station carries them from the [app] table it was opened with, so reading
+    // the profile a second time is never necessary.
     std::optional<double> lat() const noexcept { return coordinate(ws_station_lat); }
     std::optional<double> lon() const noexcept { return coordinate(ws_station_lon); }
 
