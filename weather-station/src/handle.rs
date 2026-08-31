@@ -4,7 +4,7 @@ use alloc::string::{String, ToString};
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use aimdb_core::{AimDbBuilder, RecordKey};
 use aimdb_sync::{AimDbBuilderSyncExt, AimDbHandle, SyncProducer};
@@ -12,21 +12,25 @@ use aimdb_tokio_adapter::TokioAdapter;
 use serde::Deserialize;
 use weather_contracts::{HumidityV1, TemperatureV2};
 
-use crate::{check_profile_version, AppProfile, BrokerProfile, MeshSlot, StationError};
+use crate::clock::unix_millis;
+use crate::{load_profile, AppProfile, BrokerProfile, MeshSlot, StationError};
 
 /// How long [`StationHandle::open`] waits for the graph to start pumping.
 ///
 /// Generous: it covers building the graph and starting both connectors, not a
-/// network round-trip. Exceeding it means the runtime thread is wedged, which
-/// is worth an error rather than a station that publishes into nothing.
+/// network round-trip. Exceeding it means the runtime thread is wedged.
 const GRAPH_START_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long [`StationHandle::shutdown`] waits for the runtime thread to stop.
+///
+/// `AimDbHandle::detach` has no timeout of its own, and a wedged runtime thread
+/// should fail the shutdown rather than hang the caller.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A joined mesh station driven from outside the async runtime.
 ///
 /// The record graph runs on a background thread; this is the handle onto it.
-/// Nothing about the mesh — the profile gate, the slot identity, the handshake,
-/// the outbound links — is the caller's to get right, and no async appears in
-/// the API, which is what makes this the type an FFI layer binds.
+/// No async in the API, which is what makes it the type an FFI layer binds.
 ///
 /// ```no_run
 /// # use std::thread;
@@ -45,36 +49,26 @@ const GRAPH_START_TIMEOUT: Duration = Duration::from_secs(10);
 /// # }
 /// ```
 ///
-/// The Rust templates use [`Station`](crate::Station) or
-/// [`MeshSlot`](crate::MeshSlot) instead: they are already inside a Tokio
-/// runtime, and this type would make them block a worker thread on a call the
-/// graph could drive itself.
-///
-/// # Not reentrant into a runtime
-///
-/// [`open`](Self::open) blocks on the broker pre-flight, so it must not be
-/// called from inside a Tokio runtime. That suits every FFI caller — a Python
-/// or C station owns a plain OS thread — and it is why the async doors exist
-/// for everyone else.
+/// Not reentrant into a runtime: [`open`](Self::open) blocks on the broker
+/// pre-flight. Callers already inside Tokio want [`Station`](crate::Station) or
+/// [`MeshSlot`](crate::MeshSlot); an FFI caller owns a plain OS thread anyway.
 pub struct StationHandle {
     slot: MeshSlot,
     temperature: SyncProducer<TemperatureV2>,
     humidity: SyncProducer<HumidityV1>,
-    /// Dropped last: the producers hold a weak reference to the database this
-    /// handle owns, so it has to outlive them.
+    // Last, so it drops after the producers: their `Weak<AimDb>` points at what
+    // it owns.
     db: AimDbHandle,
 }
 
 /// The mesh tables, parsed on behalf of a caller that has a file rather than a
 /// struct of its own.
 ///
-/// The Rust doors take the tables already parsed, because a station composes
-/// them into a profile naming its own extras. An FFI caller has no such struct,
-/// so this door owns the parse — which is also the only way the profile gate
-/// stays on the mesh's side of the boundary.
+/// The Rust doors take the tables already parsed. An FFI caller has no such
+/// struct, so this door owns the parse — which keeps the profile gate on the
+/// mesh's side of the boundary.
 #[derive(Debug, Deserialize)]
 struct MeshProfile {
-    profile_version: u64,
     station_id: String,
     broker: BrokerProfile,
     app: AppProfile,
@@ -83,22 +77,11 @@ struct MeshProfile {
 impl StationHandle {
     /// Join the mesh from a `station.toml` path.
     ///
-    /// Reads the mesh tables, checks the profile version, performs the
-    /// handshake and starts the graph. Tables the mesh does not define are
-    /// ignored, so a profile carrying a station's own extras still opens.
+    /// Reads the mesh tables through [`load_profile`], performs the handshake
+    /// and starts the graph. Tables the mesh does not define are ignored, so a
+    /// profile carrying a station's own extras still opens.
     pub fn open_profile(path: impl AsRef<Path>) -> Result<Self, StationError> {
-        let path = path.as_ref();
-        let raw = std::fs::read_to_string(path).map_err(|e| StationError::ProfileUnreadable {
-            path: path.display().to_string(),
-            reason: e.to_string(),
-        })?;
-        let profile: MeshProfile =
-            toml::from_str(&raw).map_err(|e| StationError::ProfileMalformed {
-                path: path.display().to_string(),
-                reason: e.to_string(),
-            })?;
-
-        check_profile_version(profile.profile_version)?;
+        let profile: MeshProfile = load_profile(path)?;
         Self::open(&profile.station_id, &profile.app, &profile.broker)
     }
 
@@ -129,9 +112,9 @@ impl StationHandle {
         // Registered after the slot's records, so it is the last future the
         // runner collects and therefore the last one polled in the first pass:
         // when it fires, both outbound links have subscribed to their buffers.
-        // Without this gate the first reading is lost roughly seven times in
-        // eight — `set()` still returns `Ok`, because a broadcast buffer
-        // accepts a value nobody is reading yet.
+        // Without this gate the first reading is usually lost — `set()` still
+        // returns `Ok`, because a broadcast buffer accepts a value nobody is
+        // reading yet.
         let (started_tx, started_rx) = mpsc::sync_channel::<()>(1);
         builder.on_start(move |_ctx| async move {
             let _ = started_tx.send(());
@@ -178,9 +161,8 @@ impl StationHandle {
     /// [`publish_temperature`](Self::publish_temperature) without blocking:
     /// fails rather than waiting when the outbound buffer is full.
     ///
-    /// The blocking form parks the calling thread, which for a Python caller
-    /// means parking the interpreter unless the binding releases the GIL around
-    /// it. This is the alternative where that does not fit.
+    /// The blocking form parks the calling thread — for a Python caller, the
+    /// interpreter, unless the binding releases the GIL around it.
     pub fn try_publish_temperature(&self, celsius: f32) -> Result<(), StationError> {
         self.temperature
             .try_set(TemperatureV2::new(celsius, unix_millis()?))?;
@@ -203,25 +185,49 @@ impl StationHandle {
 
     /// Stop the station and shut the runtime thread down.
     ///
-    /// Dropping the handle without this also shuts down, but reports the
-    /// omission as a warning; an FFI layer should call this from its free
-    /// function so the shutdown is orderly.
-    pub fn close(self) -> Result<(), StationError> {
-        self.db.detach()?;
+    /// Idempotent, and safe to call while another thread is publishing: it
+    /// takes `&self`, so no exclusive borrow has to be won from a publish
+    /// already in flight — the shape a signal handler needs.
+    ///
+    /// `publish_*` returns once the reading is in the buffer, not once it is on
+    /// the wire, so a reading published in the last milliseconds before this
+    /// call may not arrive. That is accepted rather than papered over: stations
+    /// publish on a cadence, and no wait makes delivery certain. A station that
+    /// publishes once and exits needs a delivery signal — an ACK topic.
+    ///
+    /// After this returns, `publish_*` fails with
+    /// [`SyncError::RuntimeShutdown`](aimdb_sync::SyncError::RuntimeShutdown),
+    /// deliberately: keeping the database alive would let `set()` go on
+    /// returning `Ok` into a buffer nobody reads.
+    pub fn shutdown(&self) -> Result<(), StationError> {
+        self.db.shutdown_timeout(SHUTDOWN_TIMEOUT)?;
         Ok(())
     }
-}
 
-/// Wall-clock milliseconds.
-///
-/// A reading with no usable timestamp is worse than no reading: the hub keys
-/// its dew-point join off them, so a station whose clock is unset would poison
-/// its slot rather than merely go quiet.
-fn unix_millis() -> Result<u64, StationError> {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .map_err(|_| StationError::NoWallClock)
+    /// Whether this station can still publish.
+    ///
+    /// True after [`shutdown`](Self::shutdown), and true whenever a publish
+    /// could no longer reach the graph — the runtime thread is gone, or this
+    /// process `fork`ed since the station was opened and the thread did not
+    /// come across.
+    ///
+    /// The second half is asked of the producer rather than tracked here, so it
+    /// is the very check a publish goes through: this cannot report open while
+    /// a publish would be refused.
+    ///
+    /// Neither half takes a lock, so a caller holding an interpreter lock can
+    /// ask this while another thread is joining the runtime thread.
+    pub fn is_closed(&self) -> bool {
+        self.db.is_closed() || self.temperature.check().is_err()
+    }
+
+    /// [`shutdown`](Self::shutdown) for a caller that owns the handle by value.
+    ///
+    /// Dropping the handle also shuts down, and reports the omission as a
+    /// warning; prefer this so the shutdown is orderly.
+    pub fn close(self) -> Result<(), StationError> {
+        self.shutdown()
+    }
 }
 
 #[cfg(test)]
@@ -254,6 +260,11 @@ mod tests {
         assert_eq!(profile.station_id, "slot-17");
         assert_eq!(profile.app.name, "graz-office");
         assert_eq!(profile.broker.username, "station-17");
+        // The coordinates cross the FFI boundary as `ws_station_lat`/`_lon`, so
+        // this parse is the only one: a station on a foreign runtime reads them
+        // back rather than scanning the file again.
+        assert_eq!(profile.app.lat, Some(47.07));
+        assert_eq!(profile.app.lon, Some(15.44));
     }
 
     #[test]
@@ -295,12 +306,5 @@ mod tests {
             StationError::UnsupportedProfileVersion { found: 99, .. }
         ));
         let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn readings_carry_a_wall_clock_timestamp() {
-        let now = unix_millis().unwrap();
-        // Sanity: milliseconds since the epoch, not seconds and not zero.
-        assert!(now > 1_700_000_000_000);
     }
 }

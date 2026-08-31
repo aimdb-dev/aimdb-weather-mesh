@@ -2,90 +2,50 @@
 //!
 //! What every weather mesh station has to agree on: the profile format, the
 //! slot-scoped identity, the broker handshake, and the two records the hub
-//! expects a slot to publish.
+//! expects a slot to publish. A template copies what a station author changes —
+//! the poll loop, the decoding, the source — not what they must not diverge on.
+//! Two stations disagreeing on `slot-<n>`, the version gate or the revocation
+//! policy is a mesh defect, not a template variation.
 //!
-//! A station template copies the parts a station author reads and changes — the
-//! poll loop, the bus decoding, the source implementation. It does not copy the
-//! parts a station author must not diverge on: two stations disagreeing on the
-//! `slot-<n>` format, the profile version gate or the revocation policy is a
-//! mesh defect, not a template variation. Those live here, versioned.
+//! ## Three doors onto one record graph
 //!
-//! ## Two doors
+//! - [`Station`] — the default. Join, supply one async task per quantity, run.
+//! - [`MeshSlot`] — same handshake, but hands the builder back unbuilt, for a
+//!   station whose readings arrive through a connector rather than a
+//!   `.source()`.
+//! - [`StationHandle`] (`sync` feature) — the inverse: the caller owns the
+//!   loop and publishes into it. A plain thread, or Python/C/C++ through an FFI
+//!   layer.
 //!
-//! [`Station`] is the default. Join, supply one async task per quantity, run:
+//! The graph is the same in all three; only who drives it differs. That is the
+//! point — a Python station and a Rust station cannot drift apart.
 //!
-//! ```text
-//! Station::join("slot-17", app, broker)
-//!     .await?
-//!     .temperature(temperature_source)
-//!     .humidity(humidity_source)
-//!     .run()
-//!     .await?;
-//! ```
+//! Compiled examples live on [`Station`], [`MeshSlot::attach`] and
+//! [`StationHandle`]; overview snippets are not doctested, because the types
+//! behind them are feature-gated and a doctest cannot see the features.
 //!
-//! (These overview snippets are shown, not compiled — the types behind them are
-//! feature-gated, and a doctest cannot see the library's features. The compiled
-//! examples live on [`Station`], [`MeshSlot::attach`] and [`StationHandle`].)
-//!
-//! [`MeshSlot`] is for stations that ingest *through* the record graph rather
-//! than from a `.source()` — readings arriving over a connector AimDB already
-//! speaks, optionally through records of the station's own. It performs the same
-//! handshake and attaches the same mesh records, but hands the builder back
-//! unbuilt so the station can add its intake.
-//!
-//! ## The blocking door
-//!
-//! Both doors above are async: the graph owns the loop and the station hands it
-//! a task. A caller that owns its own loop — a plain thread, or a Python, C or
-//! C++ station reaching Rust through an FFI layer — wants the inverse, and gets
-//! [`StationHandle`] behind the `sync` feature:
-//!
-//! ```text
-//! let station = StationHandle::open_profile("station.toml")?;
-//! station.publish_temperature(read_sensor())?;
-//! ```
-//!
-//! (Shown rather than compiled: the type is absent without the feature.
-//! [`StationHandle`]'s own example is the compiled one.)
-//!
-//! The record graph is the same one the async doors build; only who drives it
-//! differs. That is the point — a Python station and a Rust station join the
-//! mesh through one implementation, so neither can drift from the other.
-//!
-//! ## What stays in the template
-//!
-//! Anything above the mesh contract: the source implementation, the profile's
-//! own tables, and publish cadence. A station is free to publish as fast as its
-//! sensor reports or to throttle to whatever suits it — rate is station
-//! freedom, so a throttle belongs in the station, not behind this boundary.
-
 //! ## Runtimes
 //!
-//! The crate is `no_std` with `alloc`. `tokio-runtime` — the default, and what
-//! the two host templates use — adds the `Station` facade, [`init_tracing`],
-//! [`MeshSlot::attach`] and the pre-flight probe.
+//! `no_std` with `alloc`. `tokio-runtime` (default) adds the `Station` facade,
+//! [`MeshSlot::attach`] and the pre-flight probe — one CONNECT before the graph
+//! is built, so a revoked slot fails at startup. That is a second MQTT client
+//! for one round-trip: worth it on a host, not on an MCU, which is left to the
+//! connector's reconnect loop.
 //!
-//! An MCU station turns all of that off (`--no-default-features`) and keeps
-//! what the mesh actually defines: the profile tables, the `slot-<n>` identity,
-//! the record keys, the outbound topics, and
-//! [`configure_slot_records!`] to put the records on its own builder. It brings
-//! its own Embassy adapter and MQTT connector, because those cannot be declared
-//! here — a path dependency on embassy from this crate drags the whole embassy
-//! graph into the workspace's resolution and collides on
-//! `links = "embassy-time"`, which only the `[patch.crates-io]` entries in the
-//! *aimdb* workspace resolve. That patch set belongs wherever the MCU station
-//! lives, not in a manifest every host station also reads.
+//! An MCU station turns all of it off and keeps what the mesh defines: profile
+//! tables, `slot-<n>` identity, record keys, outbound topics, and
+//! [`configure_slot_records!`]. It brings its own Embassy adapter and MQTT
+//! connector, which cannot be declared here — a path dependency on embassy
+//! drags its whole graph into resolution and collides on
+//! `links = "embassy-time"`, resolvable only by the `[patch.crates-io]` entries
+//! in the *aimdb* workspace. That patch set belongs where the MCU station
+//! lives, not in a manifest every host station reads.
 //!
-//! What matters is that both halves derive `station.<n>.temperature` and
-//! `mqtt://station/<n>/temperature` from the same code. An MCU template that
-//! spelled those itself is exactly the drift this crate exists to prevent.
+//! Both halves derive `station.<n>.temperature` and
+//! `mqtt://station/<n>/temperature` from this code. A template spelling those
+//! itself is the drift this crate exists to prevent.
 //!
-//! ## Pre-flight is optional
-//!
-//! The `preflight` feature (on with `tokio-runtime`) probes the broker with one
-//! CONNECT before building the graph, so a revoked slot fails at startup. It is
-//! a second MQTT client bought for a single round-trip — worth it on a host,
-//! not on an MCU, which is left to the connector's reconnect loop instead.
+//! Rate is station freedom: a throttle belongs in the station, not here.
 
 #![no_std]
 
@@ -95,6 +55,8 @@ extern crate alloc;
 extern crate std;
 
 mod broker;
+#[cfg(feature = "std")]
+mod clock;
 mod error;
 #[cfg(feature = "sync")]
 mod handle;
@@ -104,9 +66,13 @@ mod slot;
 mod station;
 
 pub use broker::redact_url;
-pub use error::StationError;
+#[cfg(feature = "std")]
+pub use clock::check_wall_clock;
+pub use error::{StationError, StationErrorKind};
 #[cfg(feature = "sync")]
 pub use handle::StationHandle;
+#[cfg(feature = "std")]
+pub use profile::load_profile;
 pub use profile::{
     check_profile_version, slot_from_station_id, AppProfile, BrokerProfile, PROFILE_VERSION,
 };
@@ -124,23 +90,34 @@ pub mod __macro_deps {
 /// Set up tracing for a station binary.
 ///
 /// `station_target` is the station crate's log target (its crate name with
-/// underscores). Three more targets are in the fallback filter because the
-/// station's own name no longer covers what it reports: `weather_station`
-/// carries the handshake and the startup banner, and `aimdb` / `aimdb_core`
-/// carry `ctx.log()`. Without them a misconfigured station looks exactly like a
+/// underscores). Three more targets are in the fallback filter because a
+/// station reports under more than its own name: `weather_station` carries the
+/// handshake and the startup banner, and `aimdb` / `aimdb_core` carry
+/// `ctx.log()`. Without them a misconfigured station looks exactly like a
 /// healthy one — it says nothing either way.
 ///
 /// `RUST_LOG` overrides the whole filter when set.
-#[cfg(feature = "tokio-runtime")]
+///
+/// For a station *binary*, which is the application and therefore gets to make
+/// this decision. A library must not: an FFI layer inside someone else's
+/// process uses that host's logging instead — see `weather-station-py`'s
+/// `init_logging`.
+///
+/// Does nothing if a subscriber is already installed. `try_init` rather than
+/// `init` because the panic `init` raises on a second call is not a station's
+/// to raise: it crosses an FFI boundary as something the host cannot catch.
+#[cfg(feature = "init-tracing")]
 pub fn init_tracing(station_target: &str) {
     use alloc::format;
+    use tracing_subscriber::util::SubscriberInitExt;
 
-    tracing_subscriber::fmt()
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
                 format!("{station_target}=info,weather_station=info,aimdb_core=info,aimdb=info")
                     .into()
             }),
         )
-        .init();
+        .finish()
+        .try_init();
 }

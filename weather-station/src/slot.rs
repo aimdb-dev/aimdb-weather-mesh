@@ -21,16 +21,15 @@ pub const MESH_BUFFER_CAPACITY: usize = 10;
 /// startup error — and [`MeshSlot::attach`] puts the mesh half of the record
 /// graph on a builder the station still owns.
 ///
-/// This is the advanced door on a host, and the *only* door on an MCU:
-/// [`Station`](crate::Station) is the same graph with the builder owned for you,
-/// but it exists only under `tokio-runtime`. Reach for `MeshSlot` when the
-/// station ingests *through* the graph — a `link_from` off another connector, a
-/// transform — rather than from a `.source()`. See [`MeshSlot::attach`] for the
-/// host shape, and [`configure_slot_records!`](crate::configure_slot_records)
-/// for the MCU one.
+/// The advanced door on a host and the *only* door on an MCU, since
+/// [`Station`](crate::Station) exists only under `tokio-runtime`. Reach for it
+/// when the station ingests *through* the graph — a `link_from`, a transform —
+/// rather than from a `.source()`.
 pub struct MeshSlot {
     slot: u16,
     name: String,
+    lat: Option<f64>,
+    lon: Option<f64>,
     client_id: String,
     broker: BrokerCredential,
     temperature_key: StringKey,
@@ -75,6 +74,8 @@ impl MeshSlot {
         Ok(Self {
             slot,
             name: app.name.clone(),
+            lat: app.lat,
+            lon: app.lon,
             client_id,
             broker: BrokerCredential {
                 url: broker.url.clone(),
@@ -113,6 +114,21 @@ impl MeshSlot {
     /// The station name from the profile's `[app]` table.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The coordinates the mesh published for this station, from the profile's
+    /// `[app]` table. `None` when the profile omits them.
+    ///
+    /// Held here so the profile is parsed once, by whoever opens it: a station
+    /// on a foreign runtime reads them back through the boundary rather than
+    /// re-parsing the file with a scanner of its own.
+    pub fn lat(&self) -> Option<f64> {
+        self.lat
+    }
+
+    /// See [`lat`](Self::lat).
+    pub fn lon(&self) -> Option<f64> {
+        self.lon
     }
 
     /// The MQTT client id this station connects as, `weather-station-<n>`.
@@ -162,14 +178,10 @@ impl MeshSlot {
 /// Register the slot's two mesh records on a builder: buffers, outbound links
 /// and serializers — everything except the feed.
 ///
-/// A macro rather than a method because buffer construction is the one
-/// genuinely adapter-specific registration step, and each adapter supplies it
-/// through its own extension trait (`TokioRecordRegistrarExt`,
-/// `EmbassyRecordRegistrarExt`) with the *same* `.buffer(cfg)` shape. Expanding
-/// at the call site lets whichever trait is in scope there resolve it, which is
-/// what keeps this crate free of a runtime dependency — and keeps the record
-/// keys, topics and serializers in one place instead of copied into an MCU
-/// template where they could drift from the hub.
+/// A macro, not a method: buffer construction is adapter-specific, supplied by
+/// each adapter's extension trait with the same `.buffer(cfg)` shape. Expanding
+/// at the call site lets whichever trait is in scope resolve it, which keeps
+/// this crate free of a runtime dependency.
 ///
 /// Host stations do not call this: [`MeshSlot::attach`] does it for them.
 ///
@@ -278,6 +290,8 @@ mod tests {
         MeshSlot {
             slot,
             name: "test".to_string(),
+            lat: None,
+            lon: None,
             client_id: format!("weather-station-{slot}"),
             broker: BrokerCredential {
                 url: "mqtt://localhost:1883".to_string(),

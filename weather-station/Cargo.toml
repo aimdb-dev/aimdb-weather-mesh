@@ -7,20 +7,17 @@ license = "Apache-2.0"
 publish = false
 
 [features]
-# Host stations. Kept as the default so the templates and every `cargo` command
-# in this workspace behave as before; an MCU build opts out with
+# Host stations. An MCU build opts out with
 # `--no-default-features --features embassy-runtime`.
-default = ["tokio-runtime"]
+default = ["tokio-runtime", "rustls", "init-tracing"]
 
 # Tokio host station: the `Station` facade, `init_tracing`, and the pre-flight
 # probe. Mutually exclusive with `embassy-runtime`.
 tokio-runtime = [
     "std",
     "preflight",
-    "tracing",
     "dep:aimdb-tokio-adapter",
     "aimdb-mqtt-connector/tokio-runtime",
-    "dep:tracing-subscriber",
 ]
 
 # An MCU station enables *no* feature from this crate: it gets the mesh
@@ -30,7 +27,9 @@ tokio-runtime = [
 # see the crate docs for why the workspace, not this manifest, is where they
 # would have to land.
 
-std = ["aimdb-core/std", "weather-contracts/std", "aimdb-data-contracts/std"]
+# `dep:toml` because `load_profile` lives here: reading a `station.toml` is the
+# mesh's rule, not a station's, and every host door goes through the same one.
+std = ["aimdb-core/std", "weather-contracts/std", "aimdb-data-contracts/std", "dep:toml"]
 
 # The pre-flight CONNECT probe: one round-trip before the graph is built, so a
 # revoked slot says so at startup instead of retrying in silence.
@@ -42,14 +41,47 @@ std = ["aimdb-core/std", "weather-contracts/std", "aimdb-data-contracts/std"]
 # watching is the same outcome by a cheaper route.
 preflight = ["std", "dep:rumqttc", "dep:tokio"]
 
+# --- TLS backend for `mqtts://` ---
+#
+# Selected here and passed down, so the pre-flight probe and the connector's
+# data path cannot disagree: the pre-flight exists to fail *before* the graph
+# starts, not to fail differently from it.
+#
+# One backend rather than a choice of two. Stations are built four ways in this
+# workspace and cargo unifies a crate's features across them, so any second
+# backend is enabled alongside this one by every workspace-wide command —
+# including whatever rust-analyzer runs. rustls is the one backend that suits
+# every station: an FFI layer ships into somebody else's process and must not
+# carry a system OpenSSL there. Trust roots still come from the platform, via
+# rustls-native-certs.
+rustls = [
+    "preflight",
+    "rumqttc/use-rustls",
+    "dep:rustls-native-certs",
+    "aimdb-mqtt-connector/tokio-rustls",
+]
+
 # Route the crate's own reporting to `tracing`. Off on Embassy, where the
 # `log_*` macros compile to nothing and the connector reports via defmt.
 tracing = ["dep:tracing", "aimdb-core/tracing"]
 
+# `init_tracing`, the station-binary convenience that installs the process's
+# subscriber. Separate from `tokio-runtime` so a host build can have the Tokio
+# station without `tracing-subscriber`: an FFI layer is a library inside
+# somebody else's process and must not install one. In `default`, because a
+# station binary is the application and does get to make that call.
+init-tracing = ["tracing", "dep:tracing-subscriber"]
+
+# Route the crate's own reporting to `log` instead — for an FFI layer that hands
+# aimdb a destination rather than installing a subscriber. Must be declared here
+# and not only on aimdb-core: the `log_*` macros expand in this crate, so the
+# arm is selected by *this* crate's features.
+log = ["aimdb-core/log"]
+
 # `StationHandle`: the blocking door, for callers that own their own loop —
 # a Rust thread, or a Python/C/C++ station through an FFI layer above this
 # crate. Host-only: `aimdb-sync` is Tokio-only by design.
-sync = ["tokio-runtime", "dep:aimdb-sync", "dep:toml"]
+sync = ["tokio-runtime", "dep:aimdb-sync"]
 
 [dependencies]
 # `migratable` is not optional here: Temperature's `Linkable` impl (the
@@ -74,6 +106,11 @@ serde = { version = "1.0", default-features = false, features = [
 ] }
 thiserror = { version = "2", default-features = false }
 
+# --- std only ---
+# `load_profile`. Optional so an MCU build, which has no filesystem to read a
+# profile off, does not carry a TOML parser.
+toml = { version = "0.8", optional = true }
+
 # --- tokio-runtime only ---
 aimdb-tokio-adapter = { path = "../../aimdb/aimdb-tokio-adapter", optional = true }
 tracing = { version = "0.1", default-features = false, optional = true }
@@ -85,14 +122,17 @@ tracing-subscriber = { version = "0.3", features = [
 # Pre-flight CONNECT probe only, so a revoked credential fails at startup; the
 # data path goes through aimdb-mqtt-connector. Same feature set as the
 # connector's own rumqttc.
-rumqttc = { version = "0.25", default-features = false, features = [
-    "use-native-tls",
-], optional = true }
+# Backend chosen by the `rustls` feature above, not here — see the note on
+# `aimdb-mqtt-connector`'s rumqttc for why `default-features` is off.
+rumqttc = { version = "0.25", default-features = false, optional = true }
+
+# Platform trust roots for the rustls backend, loaded explicitly so a missing
+# CA bundle is an error rather than the panic `TlsConfiguration::default()` has.
+rustls-native-certs = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["time"], optional = true }
 
 # --- sync only ---
 aimdb-sync = { path = "../../aimdb/aimdb-sync", optional = true }
-toml = { version = "0.8", optional = true }
 
 [dev-dependencies]
 toml = "0.8"

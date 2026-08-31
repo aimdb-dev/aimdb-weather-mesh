@@ -10,12 +10,13 @@
 //! # use weather_station::{AppProfile, BrokerProfile};
 //! #[derive(Debug, Deserialize)]
 //! struct StationProfile {
-//!     profile_version: u64,
 //!     station_id: String,
 //!     broker: BrokerProfile,
 //!     app: AppProfile,
 //! }
 //! ```
+//!
+//! [`load_profile`] reads that struct off disk, version gate included.
 //!
 //! Unknown fields are ignored throughout, so the provisioning service can
 //! extend the format without a version bump.
@@ -73,6 +74,45 @@ pub fn slot_from_station_id(station_id: &str) -> Result<u16, StationError> {
         .strip_prefix("slot-")
         .and_then(|n| n.parse().ok())
         .ok_or_else(|| StationError::MalformedStationId(station_id.to_string()))
+}
+
+/// Read a station profile from a `station.toml` path.
+///
+/// `T` is the station's own profile struct — the mesh tables composed with
+/// whatever else it carries, as above. The version gate runs before `T` is
+/// deserialized, so a station cannot reach its own tables out of a profile the
+/// mesh was not issued for. That is what makes it the gate every door shares
+/// rather than one each station remembers to call.
+///
+/// Both failures name the path, because the operator reading them has to find
+/// the file.
+#[cfg(feature = "std")]
+pub fn load_profile<T: serde::de::DeserializeOwned>(
+    path: impl AsRef<std::path::Path>,
+) -> Result<T, StationError> {
+    /// The one field read before the station's own tables are.
+    #[derive(Deserialize)]
+    struct VersionProbe {
+        profile_version: u64,
+    }
+
+    fn malformed(path: &std::path::Path, e: toml::de::Error) -> StationError {
+        StationError::ProfileMalformed {
+            path: path.display().to_string(),
+            reason: e.to_string(),
+        }
+    }
+
+    let path = path.as_ref();
+    let raw = std::fs::read_to_string(path).map_err(|e| StationError::ProfileUnreadable {
+        path: path.display().to_string(),
+        reason: e.to_string(),
+    })?;
+
+    let probe: VersionProbe = toml::from_str(&raw).map_err(|e| malformed(path, e))?;
+    check_profile_version(probe.profile_version)?;
+
+    toml::from_str(&raw).map_err(|e| malformed(path, e))
 }
 
 #[cfg(test)]
@@ -182,5 +222,36 @@ mod tests {
         assert!(slot_from_station_id("slot-abc").is_err());
         // u16, so the hub's pool cannot be addressed past its range.
         assert!(slot_from_station_id("slot-70000").is_err());
+    }
+
+    /// The version gate runs before `T`, so a profile from a mesh this station
+    /// cannot honour is refused on the version — not on whatever else about it
+    /// fails to deserialize.
+    #[cfg(feature = "std")]
+    #[test]
+    fn load_profile_gates_the_version_before_the_stations_own_tables() {
+        let dir = std::env::temp_dir().join("weather-station-load-profile-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("future.toml");
+        // No `[broker]` and no `[app]`: `StationProfile` cannot deserialize
+        // from this at all, so only an early gate produces the version error.
+        std::fs::write(&path, "profile_version = 99\nstation_id = \"slot-1\"\n").unwrap();
+
+        let err = load_profile::<StationProfile>(&path).unwrap_err();
+        assert!(matches!(
+            err,
+            StationError::UnsupportedProfileVersion { found: 99, .. }
+        ));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Every door reports a bad profile the same way, and names the file.
+    #[cfg(feature = "std")]
+    #[test]
+    fn an_unreadable_profile_names_the_path() {
+        let err = load_profile::<StationProfile>("/nonexistent/station.toml").unwrap_err();
+        assert!(matches!(err, StationError::ProfileUnreadable { .. }));
+        assert!(err.to_string().contains("/nonexistent/station.toml"));
+        assert_eq!(err.kind(), crate::StationErrorKind::Profile);
     }
 }

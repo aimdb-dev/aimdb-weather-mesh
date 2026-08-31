@@ -41,7 +41,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
 use weather_contracts::{HumidityV1, TemperatureV2};
-use weather_station::{check_profile_version, AppProfile, BrokerProfile, MeshSlot};
+use weather_station::{check_wall_clock, load_profile, AppProfile, BrokerProfile, MeshSlot};
 
 /// Station-local records carrying the bus reading verbatim. They never leave
 /// the process — the mesh contract is `station.<n>.*`.
@@ -60,9 +60,11 @@ struct Cli {
 /// The station profile: the mesh's tables plus this station's `[knx]`, so a
 /// profile issued by the mesh provisioning service works unchanged once
 /// `[knx]` is appended.
+///
+/// No `profile_version`: [`load_profile`] gates it before this struct is
+/// deserialized, so a station holds only what it reads.
 #[derive(Debug, Deserialize)]
 struct StationProfile {
-    profile_version: u64,
     station_id: String,
     broker: BrokerProfile,
     app: AppProfile,
@@ -83,8 +85,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     weather_station::init_tracing("weather_station_knx");
 
     let cli = Cli::parse();
-    let profile: StationProfile = toml::from_str(&std::fs::read_to_string(&cli.config)?)?;
-    check_profile_version(profile.profile_version)?;
+    let profile: StationProfile = load_profile(&cli.config)?;
 
     // Group addresses, datapoint types and the throttle window are validated
     // before anything is built: a typo'd address would otherwise show up as a
@@ -301,24 +302,6 @@ fn log_route_table(knx: &KnxConfig, mesh: &MeshSlot) {
     }
 }
 
-/// Refuse to start without a wall clock.
-///
-/// Every reading's timestamp comes from `ctx.time().unix_time()`, which is
-/// `None` on a runtime with no RTC. `TokioAdapter` reads the OS clock, so this
-/// only fires on a system whose clock is set before the epoch — but the cost
-/// of not checking is a slot that publishes one value and then goes silent
-/// forever, which reads as a hardware fault.
-fn check_wall_clock() -> Result<(), String> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .map(|_| ())
-        .map_err(|_| {
-            "the system clock is before the Unix epoch, so readings would carry no \
-             usable timestamp — set the clock (or NTP) before starting the station"
-                .to_string()
-        })
-}
-
 /// Wall-clock milliseconds from the runtime, so the station keeps no clock of
 /// its own (`unix_time` is `None` on a runtime without an RTC).
 fn unix_millis(ctx: &aimdb_core::RuntimeContext) -> u64 {
@@ -362,7 +345,6 @@ mod tests {
     #[test]
     fn profile_parses_all_fields() {
         let profile: StationProfile = toml::from_str(PROFILE).unwrap();
-        assert_eq!(profile.profile_version, 1);
         assert_eq!(profile.station_id, "slot-17");
         assert_eq!(profile.app.name, "graz-office");
 

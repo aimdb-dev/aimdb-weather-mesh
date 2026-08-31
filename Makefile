@@ -6,7 +6,7 @@
 # here — that is the only place the matrix lives.
 
 .PHONY: help build test fmt fmt-check clippy test-embedded lockfile check clean clean-embedded \
-	ts-bindings ts-bindings-check wasm-check wasm js
+	ts-bindings ts-bindings-check wasm-check wasm js station-py station-cpp
 .DEFAULT_GOAL := help
 
 # Separate target dir for the cross-compile checks, so an interrupted embedded
@@ -30,7 +30,7 @@ TS_BINDINGS_FEATURES := ts,linkable,migratable
 # into path dependencies outside this repository (the sibling aimdb checkout
 # and its embassy submodule), which both formats code we do not own and makes
 # the result depend on whether that submodule is present.
-PACKAGES := weather-contracts weather-station weather-station-openmeteo weather-station-knx weather-hub weather-mesh-client
+PACKAGES := weather-contracts weather-station weather-station-openmeteo weather-station-knx weather-hub weather-mesh-client weather-station-py weather-station-cpp
 
 # Many cargo invocations in sequence with different feature sets can hit
 # "Stale file handle" linker errors on Docker overlay filesystems.
@@ -61,6 +61,10 @@ help:
 	@printf "    lockfile       Fail if Cargo.lock is stale for the current sibling checkout\n"
 	@printf "    check          Everything above — run before pushing\n"
 	@printf "\n"
+	@printf "  $(YELLOW)FFI stations:$(NC)\n"
+	@printf "    station-py     Run the Python station (CONFIG=station.local.toml)\n"
+	@printf "    station-cpp    Run the C++ station (CONFIG=station.local.toml, needs libcurl + nlohmann)\n"
+	@printf "\n"
 	@printf "  $(YELLOW)Browser client:$(NC)\n"
 	@printf "    wasm           Build the npm package with wasm-pack (needs wasm-pack)\n"
 	@printf "\n"
@@ -69,6 +73,40 @@ help:
 	@printf "\n"
 	@printf "  $(BLUE)Note:$(NC) this workspace reaches the aimdb crates by path, so a sibling\n"
 	@printf "        aimdb checkout must exist at ../aimdb.\n"
+
+CONFIG ?= station.local.toml
+
+## Run the Python station — see weather-station-py/README.md
+##
+## The module is copied to `weather_station.so` and reached through PYTHONPATH,
+## which is what an installed wheel does for you. Until there is a wheel, this
+## is the import path.
+station-py:
+	@printf "$(GREEN)Building the Python module...$(NC)\n"
+	cargo build -p weather-station-py
+	@cp $(FFI_TARGET_DIR)/libweather_station.so $(FFI_TARGET_DIR)/weather_station.so
+	@printf "$(GREEN)Starting the station ($(CONFIG))...$(NC)\n"
+	PYTHONPATH=$(FFI_TARGET_DIR) python3 weather-station-py/python/station.py --config $(CONFIG)
+
+## Run the C++ station — see weather-station-cpp/README.md
+##
+## Linked against the cdylib the way a consuming build would link it. libcurl and
+## nlohmann/json are this station's own dependencies, not the library's: they are
+## where the readings come from, which is the half a station of your own replaces.
+station-cpp:
+	@printf "$(GREEN)Building the C ABI library...$(NC)\n"
+	cargo build -p weather-station-cpp
+	@printf "$(GREEN)Building the station...$(NC)\n"
+	$(CXX) $(CXXFLAGS) -Iweather-station-cpp/include \
+		weather-station-cpp/cpp/station.cpp \
+		-L$(FFI_TARGET_DIR) -lweather_station_ffi -lcurl \
+		-o $(FFI_TARGET_DIR)/station-cpp
+	@printf "$(GREEN)Starting the station ($(CONFIG))...$(NC)\n"
+	LD_LIBRARY_PATH=$(FFI_TARGET_DIR) $(FFI_TARGET_DIR)/station-cpp --config $(CONFIG)
+
+CXX ?= g++
+CXXFLAGS ?= -std=c++17 -Wall -Wextra -g -pthread
+FFI_TARGET_DIR := $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),target)/debug
 
 ## Build the workspace
 build:
@@ -86,6 +124,10 @@ test:
 	cargo test -p weather-station
 	@printf "$(YELLOW)  → Testing weather-station (sync — the blocking door the FFI layers bind)$(NC)\n"
 	cargo test -p weather-station --features sync
+	@printf "$(YELLOW)  → Testing weather-station (sync + rustls — the FFI shared-library build)$(NC)\n"
+	cargo test -p weather-station --no-default-features --features "tokio-runtime,rustls,sync"
+	@printf "$(YELLOW)  → Testing weather-station (sync, no TLS backend — mqtt:// only)$(NC)\n"
+	cargo test -p weather-station --no-default-features --features "tokio-runtime,sync"
 	@printf "$(YELLOW)  → Testing weather-station-openmeteo$(NC)\n"
 	cargo test -p weather-station-openmeteo
 	@printf "$(YELLOW)  → Testing weather-station-knx$(NC)\n"
@@ -94,6 +136,8 @@ test:
 	cargo test -p weather-hub
 	@printf "$(YELLOW)  → Testing weather-mesh-client (the exported key rule)$(NC)\n"
 	cargo test -p weather-mesh-client
+	@printf "$(YELLOW)  → Testing weather-station-cpp (the log sink's first-wins contract)$(NC)\n"
+	cargo test -p weather-station-cpp --lib
 	@printf "$(GREEN)✓ All tests passed!$(NC)\n"
 
 ## Format code
@@ -134,6 +178,10 @@ clippy:
 	cargo clippy -p weather-station --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on weather-station (sync)$(NC)\n"
 	cargo clippy -p weather-station --features sync --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on weather-station (sync + rustls)$(NC)\n"
+	cargo clippy -p weather-station --no-default-features --features "tokio-runtime,rustls,sync" --all-targets -- -D warnings
+	@printf "$(YELLOW)  → Clippy on weather-station (sync, no TLS backend)$(NC)\n"
+	cargo clippy -p weather-station --no-default-features --features "tokio-runtime,sync" --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on weather-station (no_std, MCU feature set)$(NC)\n"
 	cargo clippy -p weather-station --no-default-features -- -D warnings
 	@printf "$(YELLOW)  → Clippy on weather-station-openmeteo$(NC)\n"
@@ -146,6 +194,8 @@ clippy:
 	cargo clippy -p weather-mesh-client --all-targets -- -D warnings
 	@printf "$(YELLOW)  → Clippy on weather-mesh-client ($(WASM_TARGET): the fusion)$(NC)\n"
 	cargo clippy -p weather-mesh-client --target $(WASM_TARGET) --target-dir $(WASM_CHECK_TARGET_DIR) -- -D warnings
+	@printf "$(YELLOW)  → Clippy on weather-station-py (the pyo3 door)$(NC)\n"
+	cargo clippy -p weather-station-py --all-targets -- -D warnings
 	@printf "$(GREEN)✓ Clippy clean!$(NC)\n"
 
 ## Cross-compile the no_std crates for the embedded target

@@ -1,0 +1,38 @@
+[package]
+name = "weather-station-cpp"
+version = "0.1.0"
+edition = "2021"
+description = "The C ABI door onto StationHandle, the header-only C++ layer over it, and a station template"
+license = "Apache-2.0"
+# Never published. A shipped library carries a soname, a CMake package config
+# and a generated header this crate does not have yet — see README.md.
+publish = false
+
+[lib]
+# The C symbol prefix is `ws_`; the crate is named for the workspace.
+name = "weather_station_ffi"
+# Both, and deliberately: the two link modes fail differently. The station links
+# the shared one the way a consuming build would; `staticlib` is here so the
+# build proves it can be produced — a consumer that static-links needs
+# `cargo rustc -- --print native-static-libs` to know what else to pass.
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+# `--no-default-features` is for `init-tracing`, not for TLS. `rustls` is the
+# crate's only backend, so the default set would bring the right one — but it
+# would also bring the subscriber-installing convenience, which a shared library
+# inside somebody else's process must not have. Hence the explicit list, in
+# which `rustls` still has to be named or `mqtts://` silently has no backend.
+weather-station = { path = "../weather-station", default-features = false, features = [
+    "tokio-runtime",
+    "rustls",
+    "sync",
+    # The facade reports to `log`, so this build installs no subscriber and
+    # carries no `tracing-subscriber`. `init-tracing` is deliberately absent —
+    # it is the station-*binary* convenience.
+    "log",
+] }
+
+# The log sink. `std` for `set_boxed_logger`, which leaks the sink on success
+# and drops it on refusal: first install wins.
+log = { version = "0.4", features = ["std"] }

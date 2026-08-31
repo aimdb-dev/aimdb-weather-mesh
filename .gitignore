@@ -25,3 +25,10 @@ station*.toml
 
 # Log Files
 *.log
+
+# Probe workspaces build into their own target dirs.
+weather-station-cpp/probes/*/target/
+
+# Python bytecode from the station and the spike
+__pycache__/
+*.pyc

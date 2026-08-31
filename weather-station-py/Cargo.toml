@@ -1,0 +1,44 @@
+[package]
+name = "weather-station-py"
+version = "0.1.0"
+edition = "2021"
+description = "The pyo3 door onto StationHandle, and a station template over it"
+license = "Apache-2.0"
+# Never published. The wheel is a later tag, and it will carry the maturin
+# metadata this crate does not have yet — see README.md.
+publish = false
+
+[lib]
+# The Python module is `weather_station`; the crate is named for the workspace.
+name = "weather_station"
+crate-type = ["cdylib"]
+
+[dependencies]
+# `default-features = false`, and `init-tracing` deliberately absent: this is a
+# library inside somebody else's interpreter, so it must not carry
+# `tracing-subscriber` or the convenience that installs a subscriber.
+#
+# `rustls` is the crate's only TLS backend, but with defaults off it still has
+# to be named here, or `mqtts://` silently has none.
+weather-station = { path = "../weather-station", default-features = false, features = [
+    "tokio-runtime",
+    "rustls",
+    "sync",
+    "log",
+] }
+
+# `extension-module` keeps the module from linking libpython, which is what
+# makes one build loadable by any interpreter. `abi3-py39` buys one artifact
+# per platform rather than one per platform × Python version.
+#
+# Both are unconditional, which holds only while this crate has no Rust tests:
+# `cargo test` builds a binary that must resolve CPython's symbols, and
+# `extension-module` deliberately leaves them out — so the first `#[test]` that
+# touches an interpreter fails at run time rather than at link time. The fix
+# when that day comes is pyo3's suggested optional feature
+# (`extension-module = []`, enabled by maturin).
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"] }
+
+# The `logging` bridge. `std` for `set_boxed_logger`, which leaks the destination
+# on success and drops it on refusal: first install wins.
+log = { version = "0.4", features = ["std"] }

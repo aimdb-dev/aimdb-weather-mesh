@@ -11,9 +11,8 @@ use serde::Deserialize;
 /// cadence, so a reading fetched inside this window is reused by the second one.
 const REFRESH_WINDOW_NANOS: u64 = 60 * 1_000_000_000;
 
-/// One reading of the station's location. Temperature and humidity come from
-/// the same observation and therefore share a timestamp, which the hub's
-/// dew-point join over the two records relies on.
+/// One reading of the station's location, feeding both sources: temperature
+/// and humidity come out of the same Open-Meteo response.
 #[derive(Clone, Copy)]
 pub struct Observation {
     /// Air temperature in degrees Celsius.
