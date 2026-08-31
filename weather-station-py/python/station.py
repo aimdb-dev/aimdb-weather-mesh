@@ -71,9 +71,6 @@ def resolve_location(
     location the mesh published for it, so an environment variable cannot move
     it on the public map. Coordinates are taken as a pair; half a location is an
     error rather than a silent mix of two sources.
-
-    The profile pair comes from the open station: `[app]` is parsed once, below
-    the boundary, by whoever opened the file.
     """
     lat, lon = profile
     if lat is not None and lon is not None:
@@ -95,9 +92,8 @@ def resolve_location(
 def fetch(lat: float, lon: float) -> tuple[float, float]:
     """One observation: degrees Celsius and percent relative humidity.
 
-    Both come from one request, so they describe the same moment — which is
-    what the hub's dew-point join over the two records wants. A sensor such as
-    a BME280 behaves the same way: one transaction, both values.
+    Both values come out of a single request — the shape a sensor transaction
+    yields too.
     """
     query = urllib.parse.urlencode(
         {
@@ -132,8 +128,8 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)-5s %(name)s: %(message)s")
     # aimdb's own events, routed into this program's logging rather than
-    # written behind its back. Levels stay Python's from here on:
-    # logging.getLogger("aimdb_core").setLevel(logging.WARNING)
+    # written behind its back. Levels are Python's from here on, so
+    # `logging.getLogger("aimdb_core")` filters them like any other logger.
     weather_station.init_logging()
 
     stop = stop_on_signals()
@@ -157,8 +153,8 @@ def main() -> int:
                     station.publish_temperature(celsius)
                     station.publish_humidity(percent)
                 except weather_station.StationError as e:
-                    # Publishing outlives nothing: a closed station or a lost
-                    # runtime is the end of the loop, not a reading to retry.
+                    # A closed station or a lost runtime ends the loop —
+                    # not a reading worth another attempt.
                     LOG.error("publish failed: %s", e)
                     return 1
                 LOG.info("published %.1f°C, %.1f%%", celsius, percent)
