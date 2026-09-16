@@ -15,12 +15,19 @@ env:
 #   $GITHUB_WORKSPACE/aimdb-weather-mesh   <- this repo
 #   $GITHUB_WORKSPACE/aimdb                <- the sibling the path deps resolve to
 #
-# The aimdb checkout deliberately does NOT use `submodules: recursive`. Its only
-# submodule is `_external/embassy`, which backs a `[patch.crates-io]` block in
-# the aimdb workspace root — a patch that does not apply to this workspace — and
-# an optional dependency this mesh never enables. Verified: with the submodule
-# absent, a from-scratch resolve of this workspace succeeds and `embassy-sync`
-# never enters the lock. Adding it back would only cost checkout time.
+# The aimdb checkout DOES need its `_external/embassy` submodule.
+#
+# `aimdb-knx-connector` declares `embassy-sync` as a direct path dependency
+# (`path = "../_external/embassy/embassy-sync"`), gated behind its `connector`
+# feature — which `std` enables. `weather-station-knx` turns on `std`, so the
+# submodule is part of this workspace's dependency graph and cargo cannot even
+# resolve without it. This is not the aimdb workspace's `[patch.crates-io]`
+# block (that one genuinely does not apply here); it is an ordinary path dep.
+#
+# Note the failure mode: resolution happens before any build step, so a missing
+# submodule fails *every* job — including ones that only format or lint.
+#
+# `submodules: true` (not `recursive`) is enough: embassy has no submodules.
 
 jobs:
   format-and-lint:
@@ -35,6 +42,7 @@ jobs:
         with:
           repository: aimdb-dev/aimdb
           path: aimdb
+          submodules: true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -73,6 +81,7 @@ jobs:
         with:
           repository: aimdb-dev/aimdb
           path: aimdb
+          submodules: true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -106,6 +115,7 @@ jobs:
         with:
           repository: aimdb-dev/aimdb
           path: aimdb
+          submodules: true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -137,6 +147,7 @@ jobs:
         with:
           repository: aimdb-dev/aimdb
           path: aimdb
+          submodules: true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -157,6 +168,7 @@ jobs:
         with:
           repository: aimdb-dev/aimdb
           path: aimdb
+          submodules: true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
