@@ -33,7 +33,8 @@ mod dpt;
 mod knx;
 
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder, RecordKey, StringKey};
-use aimdb_knx_connector::KnxConnector;
+use aimdb_knx_connector::{Channels, KnxConnector};
+use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use clap::Parser;
 use knx::{KnxConfig, KnxProfile};
@@ -109,10 +110,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // The KNX connector goes on before `attach`: a `link_from` is only accepted
     // once a connector claims its scheme, and the raw records below use one.
+    static KNX_CHANNELS: Channels = Channels::new();
     let mut builder = mesh.attach(
         AimDbBuilder::new()
             .runtime(Arc::new(TokioAdapter::new()?))
-            .with_connector(KnxConnector::new(&knx.gateway)),
+            .with_connector(KnxConnector::new(
+                TokioNet::udp(std::net::Ipv4Addr::UNSPECIFIED),
+                TokioDelay,
+                &knx.gateway,
+                &KNX_CHANNELS,
+            )),
     );
 
     register_temperature(&mut builder, &knx, mesh.temperature_key());

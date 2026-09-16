@@ -57,13 +57,10 @@ version = "0.5.0"
 dependencies = [
  "aimdb-core",
  "aimdb-knx-pico",
- "async-stream",
- "futures-core",
- "futures-util",
+ "critical-section",
+ "embassy-futures",
+ "embassy-sync",
  "heapless 0.8.0",
- "thiserror",
- "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -77,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-mqtt-connector"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "aimdb-core",
  "async-stream",
@@ -106,7 +103,6 @@ name = "aimdb-tcp-connector"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
- "tokio",
 ]
 
 [[package]]
@@ -550,6 +546,39 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "embassy-futures"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc2d050bdc5c21e0862a89256ed8029ae6c290a93aecefc73084b3002cdebb01"
+
+[[package]]
+name = "embassy-sync"
+version = "0.8.0"
+dependencies = [
+ "cfg-if",
+ "critical-section",
+ "embedded-io-async",
+ "futures-core",
+ "futures-sink",
+ "heapless 0.9.3",
+]
+
+[[package]]
+name = "embedded-io"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
+
+[[package]]
+name = "embedded-io-async"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2564b9f813c544241430e147d8bc454815ef9ac998878d30cc3055449f7fd4c0"
+dependencies = [
+ "embedded-io",
+]
 
 [[package]]
 name = "encoding_rs"

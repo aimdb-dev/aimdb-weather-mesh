@@ -1,5 +1,6 @@
 use aimdb_core::{buffer::BufferCfg, AimDbBuilder, RecordKey, StringKey};
 use aimdb_data_contracts::{Linkable, ObservableRegistrarExt};
+use aimdb_tokio_adapter::net::TokioNet;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use weather_contracts::{keys, DewPointV1, HumidityV1, TemperatureV2};
 
@@ -50,7 +51,14 @@ async fn main() -> aimdb_core::DbResult<()> {
     // aimdb.dev:7433.
     let aimx_bind = std::env::var("AIMX_BIND").unwrap_or_else(|_| "127.0.0.1:7433".to_string());
     tracing::info!("🔌 AimX endpoint: tcp://{}", aimx_bind);
-    builder = builder.with_connector(aimdb_tcp_connector::TcpServer::new(&aimx_bind));
+    let aimx_listener =
+        TokioNet::listen(&aimx_bind)
+            .await
+            .map_err(|e| aimdb_core::DbError::ConnectionFailed {
+                endpoint: aimx_bind.clone(),
+                reason: e.to_string(),
+            })?;
+    builder = builder.with_connector(aimdb_tcp_connector::TcpServer::new(aimx_listener));
 
     // Browser-facing AimX. Bound to all interfaces unlike the loopback TCP
     // endpoint above: a browser client is off-host by definition.

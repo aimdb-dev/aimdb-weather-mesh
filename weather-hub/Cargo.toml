@@ -18,8 +18,10 @@ weather-contracts = { path = "../weather-contracts", features = [
 aimdb-core = { path = "../../aimdb/aimdb-core", features = ["derive"] }
 # `observability` makes `.observe()`'s signal gauge live; without it core hands
 # back an inert handle and no signal stats surface on record.list/record.get.
+# `net` supplies the listener the AimX TCP server is handed.
 aimdb-tokio-adapter = { path = "../../aimdb/aimdb-tokio-adapter", features = [
     "observability",
+    "net",
 ] }
 aimdb-data-contracts = { path = "../../aimdb/aimdb-data-contracts", features = [
     "linkable",
