@@ -13,10 +13,9 @@ dependencies = [
 
 [[package]]
 name = "aimdb-core"
-version = "1.2.0"
+version = "2.0.0"
 dependencies = [
  "aimdb-derive",
- "anyhow",
  "async-channel",
  "futures-channel",
  "futures-core",
@@ -33,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-data-contracts"
-version = "0.4.0"
+version = "0.2.0"
 dependencies = [
  "aimdb-core",
  "aimdb-derive",
@@ -44,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-derive"
-version = "0.3.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -77,12 +76,8 @@ name = "aimdb-mqtt-connector"
 version = "0.7.0"
 dependencies = [
  "aimdb-core",
- "async-stream",
- "futures-core",
- "futures-util",
  "rumqttc",
  "rustls-native-certs",
- "thiserror",
  "tokio",
  "uuid",
 ]
@@ -107,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-tokio-adapter"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "aimdb-core",
  "log",
@@ -134,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-websocket-connector"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
@@ -199,12 +194,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.103"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
-
-[[package]]
 name = "async-channel"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -214,28 +203,6 @@ dependencies = [
  "event-listener-strategy",
  "futures-core",
  "pin-project-lite",
-]
-
-[[package]]
-name = "async-stream"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b5a71a6f37880a80d1d7f19efd781e4b5de42c88f0722cc13bcb6cc2cfe8476"
-dependencies = [
- "async-stream-impl",
- "futures-core",
- "pin-project-lite",
-]
-
-[[package]]
-name = "async-stream-impl"
-version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
