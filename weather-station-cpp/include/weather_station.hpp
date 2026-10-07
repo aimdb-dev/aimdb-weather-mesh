@@ -132,7 +132,7 @@ public:
     Station(const Station &) = delete;
     Station &operator=(const Station &) = delete;
 
-    // Publish a reading, waiting for room in the slot's buffer.
+    // Publish a reading into the slot's buffer.
     //
     // const, and that is the contract rather than an oversight: several sensor
     // threads publish through one station at once. It is the C++ spelling of
@@ -143,15 +143,6 @@ public:
 
     void publish_humidity(float percent) const {
         detail::throw_if_failed(ws_station_publish_humidity(handle_, percent));
-    }
-
-    // The same, failing rather than waiting.
-    void try_publish_temperature(float celsius) const {
-        detail::throw_if_failed(ws_station_try_publish_temperature(handle_, celsius));
-    }
-
-    void try_publish_humidity(float percent) const {
-        detail::throw_if_failed(ws_station_try_publish_humidity(handle_, percent));
     }
 
     // Stop the station. Idempotent, and safe while other threads publish.

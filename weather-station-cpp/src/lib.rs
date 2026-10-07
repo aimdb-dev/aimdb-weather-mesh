@@ -264,16 +264,6 @@ macro_rules! publish_fn {
 
 publish_fn!(ws_station_publish_temperature, publish_temperature, celsius);
 publish_fn!(ws_station_publish_humidity, publish_humidity, percent);
-publish_fn!(
-    ws_station_try_publish_temperature,
-    try_publish_temperature,
-    celsius
-);
-publish_fn!(
-    ws_station_try_publish_humidity,
-    try_publish_humidity,
-    percent
-);
 
 /// The slot this station publishes into, or `0` for a null handle. Answers
 /// after a close: the slot comes from the profile, not the runtime.

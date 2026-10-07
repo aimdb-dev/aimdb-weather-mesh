@@ -138,7 +138,7 @@ impl StationHandle {
         })
     }
 
-    /// Publish a temperature reading, blocking until the graph accepts it.
+    /// Publish a temperature reading into the slot's buffer.
     ///
     /// The reading is stamped with the current wall-clock time. The hub pairs
     /// whatever it last saw of each quantity, so temperature and humidity do
@@ -149,29 +149,9 @@ impl StationHandle {
         Ok(())
     }
 
-    /// Publish a humidity reading, blocking until the graph accepts it.
+    /// Publish a humidity reading into the slot's buffer.
     pub fn publish_humidity(&self, percent: f32) -> Result<(), StationError> {
         self.humidity.set(HumidityV1 {
-            percent,
-            timestamp: unix_millis()?,
-        })?;
-        Ok(())
-    }
-
-    /// [`publish_temperature`](Self::publish_temperature) without blocking:
-    /// fails rather than waiting when the outbound buffer is full.
-    ///
-    /// The blocking form parks the calling thread — for a Python caller, the
-    /// interpreter, unless the binding releases the GIL around it.
-    pub fn try_publish_temperature(&self, celsius: f32) -> Result<(), StationError> {
-        self.temperature
-            .try_set(TemperatureV2::new(celsius, unix_millis()?))?;
-        Ok(())
-    }
-
-    /// [`publish_humidity`](Self::publish_humidity) without blocking.
-    pub fn try_publish_humidity(&self, percent: f32) -> Result<(), StationError> {
-        self.humidity.try_set(HumidityV1 {
             percent,
             timestamp: unix_millis()?,
         })?;
