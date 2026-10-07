@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn other_db_failures_stay_runtime() {
         assert_eq!(
-            StationError::Sync(aimdb_sync::SyncError::SetTimeout).kind(),
+            StationError::Sync(aimdb_sync::SyncError::GetTimeout).kind(),
             StationErrorKind::Runtime
         );
     }

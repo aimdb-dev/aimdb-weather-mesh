@@ -62,16 +62,12 @@ typedef struct ws_station ws_station;
  * `path` must be UTF-8. */
 int ws_station_open_profile(const char *path, ws_station **out);
 
-/* Publish a reading, waiting for room in the slot's buffer.
+/* Publish a reading into the slot's buffer.
  *
- * Blocking, and safe to call concurrently from as many threads as the caller
+ * Safe to call concurrently from as many threads as the caller
  * has sensors: the station is shared, not exclusive. */
 int ws_station_publish_temperature(const ws_station *station, float celsius);
 int ws_station_publish_humidity(const ws_station *station, float percent);
-
-/* The same, failing rather than waiting when the buffer is full. */
-int ws_station_try_publish_temperature(const ws_station *station, float celsius);
-int ws_station_try_publish_humidity(const ws_station *station, float percent);
 
 /* The slot number, or 0 for NULL. Still answers after a close: the slot comes
  * from the profile, not the runtime. */

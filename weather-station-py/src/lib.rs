@@ -107,32 +107,16 @@ impl PyStation {
         Ok(Self { inner: handle })
     }
 
-    /// Publish a temperature reading, waiting for room in the slot's buffer.
+    /// Publish a temperature reading into the slot's buffer.
     fn publish_temperature(&self, py: Python<'_>, celsius: f32) -> PyResult<()> {
         py.detach(|| self.inner.publish_temperature(celsius))
             .map_err(to_py_err)
     }
 
-    /// Publish a humidity reading, waiting for room in the slot's buffer.
+    /// Publish a humidity reading into the slot's buffer.
     fn publish_humidity(&self, py: Python<'_>, percent: f32) -> PyResult<()> {
         py.detach(|| self.inner.publish_humidity(percent))
             .map_err(to_py_err)
-    }
-
-    /// Publish a temperature reading, or fail rather than wait.
-    ///
-    /// Does not release the GIL, because it does not block.
-    fn try_publish_temperature(&self, celsius: f32) -> PyResult<()> {
-        self.inner
-            .try_publish_temperature(celsius)
-            .map_err(to_py_err)
-    }
-
-    /// Publish a humidity reading, or fail rather than wait.
-    ///
-    /// Does not release the GIL, because it does not block.
-    fn try_publish_humidity(&self, percent: f32) -> PyResult<()> {
-        self.inner.try_publish_humidity(percent).map_err(to_py_err)
     }
 
     /// The slot number this station publishes into.
