@@ -8,9 +8,8 @@
 //! - **v1**: `{ "schema_version": 1, "temp": f32, "timestamp": u64, "unit": "C"|"F"|"K" }`
 //! - **v2** (what new nodes are written against): `{ "schema_version": 2, "celsius": f32, "timestamp": u64 }`
 //!
-//! The `MigrationChain` impl (via `migration_chain!`) reads `schema_version`
-//! from the payload and migrates an older one to the current schema before the
-//! record sees it.
+//! The MQTT decoder reads the embedded `schema_version` and passes it to
+//! AimDB’s migration chain before the record sees the value.
 
 extern crate alloc;
 
@@ -160,9 +159,14 @@ impl MigrationStep for TemperatureV1ToV2 {
 }
 
 #[cfg(feature = "migratable")]
+impl aimdb_data_contracts::ContractShape for TemperatureV1 {}
+
+#[cfg(feature = "migratable")]
+impl aimdb_data_contracts::ContractShape for TemperatureV2 {}
+
+#[cfg(feature = "migratable")]
 aimdb_data_contracts::migration_chain! {
     type Current = TemperatureV2;
-    version_field = "schema_version";
     steps {
         TemperatureV1ToV2: TemperatureV1 => TemperatureV2,
     }
@@ -235,8 +239,18 @@ impl Settable for TemperatureV2 {
 #[cfg(all(feature = "linkable", feature = "migratable"))]
 impl Linkable for TemperatureV2 {
     fn from_bytes(data: &[u8]) -> Result<Self, alloc::string::String> {
-        use aimdb_data_contracts::MigrationChain;
-        Self::migrate_from_bytes(data).map_err(|e| alloc::format!("Migration error: {}", e))
+        use aimdb_data_contracts::{link_codecs::Json, MigrationChain};
+
+        // Deployed stations carry the version inside the JSON payload.
+        #[derive(Deserialize)]
+        struct VersionProbe {
+            schema_version: u32,
+        }
+
+        let version: VersionProbe =
+            serde_json::from_slice(data).map_err(|e| alloc::format!("Migration error: {e}"))?;
+        Self::migrate_from(version.schema_version, data, &Json)
+            .map_err(|e| alloc::format!("Migration error: {e}"))
     }
 
     fn to_bytes(&self) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {

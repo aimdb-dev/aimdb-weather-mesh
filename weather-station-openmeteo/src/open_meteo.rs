@@ -1,15 +1,16 @@
 //! Open-Meteo as the station's data source.
 //!
-//! Free of AimDB and contract types: everything here is about fetching numbers
-//! for a coordinate, so replacing this module with a sensor driver leaves the
-//! record graph in `main.rs` untouched.
+//! Fetches observations for a coordinate and uses the station runtime clock
+//! for caching and timestamps. The record graph lives in `main.rs`.
 
-use aimdb_core::RuntimeContext;
+use std::time::Duration;
+
+use aimdb_core::{RuntimeContext, Stamp};
 use serde::Deserialize;
 
 /// How long a fetched observation stays valid. Both sources poll on the same
 /// cadence, so a reading fetched inside this window is reused by the second one.
-const REFRESH_WINDOW_NANOS: u64 = 60 * 1_000_000_000;
+const REFRESH_WINDOW: Duration = Duration::from_secs(60);
 
 /// One reading of the station's location, feeding both sources: temperature
 /// and humidity come out of the same Open-Meteo response.
@@ -28,7 +29,7 @@ pub struct OpenMeteoClient {
     lat: f64,
     lon: f64,
     /// Last observation with the monotonic reading it was fetched at.
-    cached: tokio::sync::Mutex<Option<(u64, Observation)>>,
+    cached: tokio::sync::Mutex<Option<(Stamp, Observation)>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,7 +54,7 @@ impl OpenMeteoClient {
     }
 
     /// The current observation, fetched at most once per
-    /// [`REFRESH_WINDOW_NANOS`].
+    /// [`REFRESH_WINDOW`].
     ///
     /// The lock is held across the HTTP call so the second source waits and
     /// then reads the observation the first one fetched, rather than issuing a
@@ -63,7 +64,7 @@ impl OpenMeteoClient {
         let mut cached = self.cached.lock().await;
 
         if let Some((fetched_at, obs)) = *cached {
-            if ctx.time().now().saturating_sub(fetched_at) < REFRESH_WINDOW_NANOS {
+            if ctx.time().now().since(fetched_at) < REFRESH_WINDOW {
                 return Ok(obs);
             }
         }

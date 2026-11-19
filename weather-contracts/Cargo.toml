@@ -9,7 +9,7 @@ publish = false
 [features]
 default = ["std"]
 std = ["aimdb-data-contracts/std"]
-linkable = ["aimdb-data-contracts/linkable", "serde_json"]
+linkable = ["aimdb-data-contracts/linkable-json", "serde_json"]
 simulatable = ["aimdb-data-contracts/simulatable", "rand"]
 migratable = ["aimdb-data-contracts/migratable"]
 # TypeScript bindings for the browser client, emitted at test time by ts-rs.

@@ -26,10 +26,7 @@ JS_DIR := weather-mesh-client/js
 TS_BINDINGS_DIR := $(JS_DIR)/src/generated
 TS_BINDINGS_FEATURES := ts,linkable,migratable
 
-# Every workspace member. `cargo fmt --all` is deliberately not used: it walks
-# into path dependencies outside this repository (the sibling aimdb checkout
-# and its embassy submodule), which both formats code we do not own and makes
-# the result depend on whether that submodule is present.
+# Format workspace members only so Cargo does not format the sibling AimDB checkout.
 PACKAGES := weather-contracts weather-station weather-station-openmeteo weather-station-knx weather-hub weather-mesh-client weather-station-py weather-station-cpp
 
 # Many cargo invocations in sequence with different feature sets can hit

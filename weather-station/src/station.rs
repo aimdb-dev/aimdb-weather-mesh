@@ -63,7 +63,7 @@ impl Station {
         Fut: Future<Output = ()> + Send + 'static,
     {
         let key = self.slot.temperature_key();
-        self.builder.configure::<TemperatureV2>(key, |reg| {
+        self.builder.configure(key, |reg| {
             reg.source(f);
         });
         self
@@ -78,7 +78,7 @@ impl Station {
         Fut: Future<Output = ()> + Send + 'static,
     {
         let key = self.slot.humidity_key();
-        self.builder.configure::<HumidityV1>(key, |reg| {
+        self.builder.configure(key, |reg| {
             reg.source(f);
         });
         self

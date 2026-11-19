@@ -1,5 +1,5 @@
-use aimdb_core::{buffer::BufferCfg, AimDbBuilder, RecordKey, StringKey};
-use aimdb_data_contracts::{Linkable, ObservableRegistrarExt};
+use aimdb_core::{buffer::BufferCfg, AimDbBuilder, RecordKey};
+use aimdb_data_contracts::{Key, Linkable, ObservableRegistrarExt};
 use aimdb_tokio_adapter::net::TokioNet;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use weather_contracts::{keys, DewPointV1, HumidityV1, TemperatureV2};
@@ -103,9 +103,9 @@ async fn main() -> aimdb_core::DbResult<()> {
 /// on `record list` / `record get`.
 fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
     for slot in 0..slots {
-        let temp_key = StringKey::intern(keys::temperature_key(slot));
+        let temp_key = Key::<TemperatureV2>::interned(&keys::temperature_key(slot));
         let temp_topic = keys::temperature_topic(slot);
-        builder.configure::<TemperatureV2>(temp_key, |reg| {
+        builder.configure(temp_key, |reg| {
             // Single Producer, Multiple Consumers (SPMC) ring buffer: one
             // station publishes into it, the dashboard and `aimdb record get`
             // read from it.
@@ -124,15 +124,15 @@ fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
                         // station publishing a malformed payload is visible.
                         ctx.log()
                             .error(&format!("{key_name}: rejected payload: {e}"));
-                        e
+                        e.into()
                     })
                 })
                 .finish();
         });
 
-        let humidity_key = StringKey::intern(keys::humidity_key(slot));
+        let humidity_key = Key::<HumidityV1>::interned(&keys::humidity_key(slot));
         let humidity_topic = keys::humidity_topic(slot);
-        builder.configure::<HumidityV1>(humidity_key, |reg| {
+        builder.configure(humidity_key, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
             reg.observe();
             reg.with_remote_access();
@@ -142,7 +142,7 @@ fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
                     HumidityV1::from_bytes(data).map_err(|e| {
                         ctx.log()
                             .error(&format!("{key_name}: rejected payload: {e}"));
-                        e
+                        e.into()
                     })
                 })
                 .finish();
@@ -150,14 +150,14 @@ fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
 
         // Derived at the hub so the dashboard stays supplied even when a
         // station publishes only temperature/humidity.
-        let dew_point_key = StringKey::intern(keys::dew_point_key(slot));
-        builder.configure::<DewPointV1>(dew_point_key, |reg| {
+        let dew_point_key = Key::<DewPointV1>::interned(&keys::dew_point_key(slot));
+        builder.configure(dew_point_key, |reg| {
             reg.buffer(BufferCfg::SpmcRing { capacity: 100 });
             reg.observe();
             reg.with_remote_access();
             reg.transform_join(|b| {
-                b.input::<TemperatureV2>(temp_key)
-                    .input::<HumidityV1>(humidity_key)
+                b.input(temp_key)
+                    .input(humidity_key)
                     .on_triggers(|mut rx, producer| async move {
                         let mut last_temp: Option<TemperatureV2> = None;
                         let mut last_hum: Option<HumidityV1> = None;
@@ -180,5 +180,33 @@ fn configure_mesh(builder: &mut AimDbBuilder, slots: u16) {
                     })
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn slot_records_advertise_schemas_to_aimx_clients() {
+        let runtime = std::sync::Arc::new(TokioAdapter::new().unwrap());
+        let mut builder = AimDbBuilder::new().runtime(runtime).with_connector(
+            aimdb_mqtt_connector::MqttConnector::new("mqtt://localhost")
+                .with_client_id("weather-hub-test"),
+        );
+        configure_mesh(&mut builder, 1);
+        let (db, _runner) = builder.build().await.unwrap();
+
+        let records = db.list_records();
+        assert_eq!(records.len(), 3);
+        for (key, schema, version) in [
+            ("station.0.temperature", "temperature", 2),
+            ("station.0.humidity", "humidity", 1),
+            ("station.0.dew_point", "dew_point", 1),
+        ] {
+            let record = records.iter().find(|r| r.record_key == key).unwrap();
+            assert_eq!(record.schema_type.as_deref(), Some(schema));
+            assert_eq!(record.schema_version, Some(version));
+        }
     }
 }

@@ -15,6 +15,7 @@ path = "src/main.rs"
 weather-station = { path = "../weather-station" }
 weather-contracts = { path = "../weather-contracts" }
 aimdb-core = { path = "../../aimdb/aimdb-core" }
+aimdb-data-contracts = { path = "../../aimdb/aimdb-data-contracts" }
 # `net`: the adapter owns the KNX connector's UDP socket and clock.
 aimdb-tokio-adapter = { path = "../../aimdb/aimdb-tokio-adapter", features = ["net"] }
 # `tracing` puts the connector's own gateway/reconnect reporting on the same

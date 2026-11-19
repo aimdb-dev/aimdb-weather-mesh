@@ -32,7 +32,8 @@
 mod dpt;
 mod knx;
 
-use aimdb_core::{buffer::BufferCfg, AimDbBuilder, RecordKey, StringKey};
+use aimdb_core::{buffer::BufferCfg, AimDbBuilder, Name, RecordKey};
+use aimdb_data_contracts::Key;
 use aimdb_knx_connector::KnxConnector;
 use aimdb_tokio_adapter::net::{TokioDelay, TokioNet};
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
@@ -46,8 +47,8 @@ use weather_station::{check_wall_clock, load_profile, AppProfile, BrokerProfile,
 
 /// Station-local records carrying the bus reading verbatim. They never leave
 /// the process — the mesh contract is `station.<n>.*`.
-const RAW_TEMPERATURE_KEY: StringKey = StringKey::new("knx.temperature");
-const RAW_HUMIDITY_KEY: StringKey = StringKey::new("knx.humidity");
+const RAW_TEMPERATURE_KEY: Name<'static, TemperatureV2> = Name::new("knx.temperature");
+const RAW_HUMIDITY_KEY: Name<'static, HumidityV1> = Name::new("knx.humidity");
 
 /// KNX weather station — republishes bus sensors into a mesh slot
 #[derive(Debug, Parser)]
@@ -138,12 +139,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// The mesh record's buffer, outbound link and serializer are already on the
 /// builder ([`MeshSlot::attach`]); configuring the key again adds this
 /// station's feed to it.
-fn register_temperature(builder: &mut AimDbBuilder, knx: &KnxConfig, mesh_key: StringKey) {
+fn register_temperature(builder: &mut AimDbBuilder, knx: &KnxConfig, mesh_key: Key<TemperatureV2>) {
     let ga = knx.temperature.group_address.clone();
     let dpt = knx.temperature.dpt;
     let link = format!("knx://{ga}");
 
-    builder.configure::<TemperatureV2>(RAW_TEMPERATURE_KEY, |reg| {
+    builder.configure(RAW_TEMPERATURE_KEY, |reg| {
         // SingleLatest: a sensor has one current value. The throttle is
         // leading-edge — it drops readings inside the window rather than
         // deferring them, so a burst followed by silence leaves the mesh on
@@ -159,8 +160,8 @@ fn register_temperature(builder: &mut AimDbBuilder, knx: &KnxConfig, mesh_key: S
     });
 
     let min_publish_ms = knx.min_publish_ms;
-    builder.configure::<TemperatureV2>(mesh_key, |reg| {
-        reg.transform::<TemperatureV2, _>(RAW_TEMPERATURE_KEY, move |b| {
+    builder.configure(mesh_key, |reg| {
+        reg.transform(RAW_TEMPERATURE_KEY, move |b| {
             b.with_state(Throttle::default()).on_value(
                 move |v: &TemperatureV2, st: &mut Throttle| {
                     admit(st, v.timestamp, min_publish_ms, "temperature").then(|| v.clone())
@@ -171,12 +172,12 @@ fn register_temperature(builder: &mut AimDbBuilder, knx: &KnxConfig, mesh_key: S
 }
 
 /// `knx.humidity` ← the bus, then the throttle into the mesh record.
-fn register_humidity(builder: &mut AimDbBuilder, knx: &KnxConfig, mesh_key: StringKey) {
+fn register_humidity(builder: &mut AimDbBuilder, knx: &KnxConfig, mesh_key: Key<HumidityV1>) {
     let ga = knx.humidity.group_address.clone();
     let dpt = knx.humidity.dpt;
     let link = format!("knx://{ga}");
 
-    builder.configure::<HumidityV1>(RAW_HUMIDITY_KEY, |reg| {
+    builder.configure(RAW_HUMIDITY_KEY, |reg| {
         reg.buffer(BufferCfg::SingleLatest)
             .link_from(&link)
             .with_deserializer(move |ctx, data: &[u8]| {
@@ -191,8 +192,8 @@ fn register_humidity(builder: &mut AimDbBuilder, knx: &KnxConfig, mesh_key: Stri
     });
 
     let min_publish_ms = knx.min_publish_ms;
-    builder.configure::<HumidityV1>(mesh_key, |reg| {
-        reg.transform::<HumidityV1, _>(RAW_HUMIDITY_KEY, move |b| {
+    builder.configure(mesh_key, |reg| {
+        reg.transform(RAW_HUMIDITY_KEY, move |b| {
             b.with_state(Throttle::default())
                 .on_value(move |v: &HumidityV1, st: &mut Throttle| {
                     admit(st, v.timestamp, min_publish_ms, "humidity").then(|| v.clone())
@@ -207,14 +208,19 @@ fn register_humidity(builder: &mut AimDbBuilder, knx: &KnxConfig, mesh_key: Stri
 /// The value never enters the buffer. The KNX demo coerces a decode failure to
 /// `0.0`; here that would publish 0 °C into the mesh and drag the hub's derived
 /// dew point with it.
-fn reject(ctx: &aimdb_core::RuntimeContext, ga: &str, data: &[u8], e: dpt::DecodeError) -> String {
+fn reject(
+    ctx: &aimdb_core::RuntimeContext,
+    ga: &str,
+    data: &[u8],
+    e: dpt::DecodeError,
+) -> aimdb_core::IngestError {
     let msg = format!(
         "knx {ga}: undecodable telegram ({}), {} byte(s)",
         e.0,
         data.len()
     );
     ctx.log().warn(&msg);
-    msg
+    msg.into()
 }
 
 // ============================================================================

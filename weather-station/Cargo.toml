@@ -136,3 +136,8 @@ aimdb-sync = { path = "../../aimdb/aimdb-sync", optional = true }
 
 [dev-dependencies]
 toml = "0.8"
+
+[lints.rust]
+# AimDB's logging macros check this feature in the calling crate. This crate
+# leaves defmt logging to the embedded application and its connector.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("defmt"))'] }
