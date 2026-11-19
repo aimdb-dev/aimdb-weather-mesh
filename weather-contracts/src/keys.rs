@@ -10,9 +10,8 @@
 //! of a running hub, and of whoever has joined it — discovered at runtime,
 //! never compiled in.
 //!
-//! Keys are returned as `String` rather than interned: `StringKey` lives in
-//! `aimdb-core`, and this crate stays serde-only so it can ship as the small
-//! contract wheel. Callers intern.
+//! Key names are returned as `String` for the browser API. The hub and stations
+//! intern them as typed AimDB keys during record registration.
 //!
 //! [`slot_from_key`] is the same rule read backwards, and it exists for the one
 //! participant that receives keys rather than deriving them: a browser client

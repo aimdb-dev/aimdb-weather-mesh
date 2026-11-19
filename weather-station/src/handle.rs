@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aimdb_core::{AimDbBuilder, RecordKey};
+use aimdb_core::AimDbBuilder;
 use aimdb_sync::{AimDbBuilderSyncExt, AimDbHandle, SyncProducer};
 use aimdb_tokio_adapter::TokioAdapter;
 use serde::Deserialize;
@@ -125,8 +125,8 @@ impl StationHandle {
             .recv_timeout(GRAPH_START_TIMEOUT)
             .map_err(|_| StationError::GraphStartTimeout(GRAPH_START_TIMEOUT))?;
 
-        let temperature = db.producer::<TemperatureV2>(slot.temperature_key().as_str())?;
-        let humidity = db.producer::<HumidityV1>(slot.humidity_key().as_str())?;
+        let temperature = db.producer(slot.temperature_key())?;
+        let humidity = db.producer(slot.humidity_key())?;
 
         slot.log_ready();
 

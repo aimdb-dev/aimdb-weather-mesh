@@ -4,9 +4,8 @@ The data contracts of the weather mesh: the `Temperature`, `Humidity` and
 `DewPoint` schemas that every station encodes and the hub decodes. The Rust type
 *is* the wire format — a payload that does not match is rejected at the hub.
 
-Records are addressed by `StringKey` at the hub and at the stations, so this
-crate carries no key constants; it defines the schemas only. It is `no_std`
-compatible (with `alloc`) for use on MCU nodes.
+The hub and stations build typed AimDB keys from the shared naming rule in
+`weather_contracts::keys`. This crate supports `no_std` with `alloc` for MCU nodes.
 
 ## Schemas
 

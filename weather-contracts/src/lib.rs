@@ -10,9 +10,8 @@
 //! for "the latest" — it would be a published name whose meaning changes under
 //! callers, which is the one thing a contract must never do. A node names the
 //! shape it speaks, and that is readable in its source forever.
-//! Records are addressed by `StringKey` at the hub and at the stations, so what
-//! this crate carries is how a key is *spelled* — never an enumeration of which
-//! keys exist, which is a property of a running deployment.
+//! The hub and stations build typed AimDB keys from the names in [`keys`].
+//! The set of keys is determined by the running deployment.
 //!
 //! This crate is `no_std` compatible for use on MCU nodes.
 

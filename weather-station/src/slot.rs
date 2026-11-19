@@ -4,8 +4,8 @@
 use alloc::format;
 use alloc::string::String;
 
-use aimdb_core::StringKey;
-use weather_contracts::keys;
+use aimdb_data_contracts::Key;
+use weather_contracts::{keys, HumidityV1, TemperatureV2};
 
 use crate::broker::redact_url;
 use crate::{slot_from_station_id, AppProfile, BrokerProfile, StationError};
@@ -32,8 +32,8 @@ pub struct MeshSlot {
     lon: Option<f64>,
     client_id: String,
     broker: BrokerCredential,
-    temperature_key: StringKey,
-    humidity_key: StringKey,
+    temperature_key: Key<TemperatureV2>,
+    humidity_key: Key<HumidityV1>,
     temperature_topic: String,
     humidity_topic: String,
 }
@@ -82,8 +82,8 @@ impl MeshSlot {
                 username: broker.username.clone(),
                 password: broker.password.clone(),
             },
-            temperature_key: StringKey::intern(keys::temperature_key(slot)),
-            humidity_key: StringKey::intern(keys::humidity_key(slot)),
+            temperature_key: Key::interned(&keys::temperature_key(slot)),
+            humidity_key: Key::interned(&keys::humidity_key(slot)),
             temperature_topic: keys::temperature_topic(slot),
             humidity_topic: keys::humidity_topic(slot),
         })
@@ -155,12 +155,12 @@ impl MeshSlot {
     }
 
     /// Record key `station.<n>.temperature`.
-    pub fn temperature_key(&self) -> StringKey {
+    pub fn temperature_key(&self) -> Key<TemperatureV2> {
         self.temperature_key
     }
 
     /// Record key `station.<n>.humidity`.
-    pub fn humidity_key(&self) -> StringKey {
+    pub fn humidity_key(&self) -> Key<HumidityV1> {
         self.humidity_key
     }
 
@@ -206,7 +206,7 @@ macro_rules! configure_slot_records {
         let builder = $builder;
         let slot = $slot;
 
-        builder.configure::<TemperatureV2>(slot.temperature_key(), |reg| {
+        builder.configure(slot.temperature_key(), |reg| {
             reg.buffer(BufferCfg::SpmcRing {
                 capacity: $crate::MESH_BUFFER_CAPACITY,
             });
@@ -217,7 +217,7 @@ macro_rules! configure_slot_records {
                 .finish();
         });
 
-        builder.configure::<HumidityV1>(slot.humidity_key(), |reg| {
+        builder.configure(slot.humidity_key(), |reg| {
             reg.buffer(BufferCfg::SpmcRing {
                 capacity: $crate::MESH_BUFFER_CAPACITY,
             });
@@ -298,8 +298,8 @@ mod tests {
                 username: "u".to_string(),
                 password: "p".to_string(),
             },
-            temperature_key: StringKey::intern(keys::temperature_key(slot)),
-            humidity_key: StringKey::intern(keys::humidity_key(slot)),
+            temperature_key: Key::interned(&keys::temperature_key(slot)),
+            humidity_key: Key::interned(&keys::humidity_key(slot)),
             temperature_topic: keys::temperature_topic(slot),
             humidity_topic: keys::humidity_topic(slot),
         }

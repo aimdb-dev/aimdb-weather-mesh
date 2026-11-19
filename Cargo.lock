@@ -12,9 +12,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aimdb-build-info"
+version = "0.1.0"
+
+[[package]]
 name = "aimdb-core"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
+ "aimdb-build-info",
  "aimdb-derive",
  "async-channel",
  "futures-channel",
@@ -32,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-data-contracts"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aimdb-core",
  "aimdb-derive",
@@ -43,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-derive"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -52,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-knx-connector"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aimdb-core",
  "aimdb-knx-pico",
@@ -71,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-mqtt-connector"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aimdb-core",
  "rumqttc",
@@ -82,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-sync"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "aimdb-core",
  "aimdb-tokio-adapter",
@@ -93,14 +98,14 @@ dependencies = [
 
 [[package]]
 name = "aimdb-tcp-connector"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aimdb-core",
 ]
 
 [[package]]
 name = "aimdb-tokio-adapter"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aimdb-core",
  "log",
@@ -110,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-wasm-adapter"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
@@ -127,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "aimdb-websocket-connector"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aimdb-core",
  "aimdb-data-contracts",
@@ -2468,6 +2473,7 @@ name = "weather-station-knx"
 version = "0.1.0"
 dependencies = [
  "aimdb-core",
+ "aimdb-data-contracts",
  "aimdb-knx-connector",
  "aimdb-tokio-adapter",
  "clap",
